@@ -9,6 +9,8 @@ target/
 **/release.properties
 **/dependency-reduced-pom.xml
 
+data
+
 # IDE
 .idea/
 *.iml
