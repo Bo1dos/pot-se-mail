@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?import javafx.scene.control.*?>
+<?import javafx.scene.layout.*?>
+<VBox xmlns="http://javafx.com/javafx/17" xmlns:fx="http://javafx.com/fxml/1"
+      fx:controller="ru.study.ui.fx.controller.LoginDialogController" spacing="8" style="-fx-padding:12;">
+  <Label text="Add account"/>
+  <GridPane hgap="8" vgap="6">
+    <Label text="Email:" GridPane.rowIndex="0" GridPane.columnIndex="0"/>
+    <TextField fx:id="emailField" GridPane.rowIndex="0" GridPane.columnIndex="1"/>
+    <Label text="IMAP server:" GridPane.rowIndex="1" GridPane.columnIndex="0"/>
+    <TextField fx:id="imapField" GridPane.rowIndex="1" GridPane.columnIndex="1"/>
+  </GridPane>
+  <HBox spacing="8" alignment="CENTER_RIGHT">
+    <Button text="Test" onAction="#onTest"/>
+    <Button text="Save" onAction="#onSave"/>
+    <Button text="Cancel" onAction="#onCancel"/>
+  </HBox>
+</VBox>

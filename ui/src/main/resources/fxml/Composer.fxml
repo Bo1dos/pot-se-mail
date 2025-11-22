@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?import javafx.scene.control.*?>
+<?import javafx.scene.layout.*?>
+<?import javafx.scene.web.*?>
+<VBox xmlns="http://javafx.com/javafx/17" xmlns:fx="http://javafx.com/fxml/1"
+      fx:controller="ru.study.ui.fx.controller.ComposerController" spacing="6" style="-fx-padding:8;">
+  <HBox spacing="6">
+    <Label text="To:"/>
+    <TextField fx:id="toField" HBox.hgrow="ALWAYS"/>
+    <Label text="Subject:"/>
+    <TextField fx:id="subjectField" prefWidth="200"/>
+  </HBox>
+  <HTMLEditor fx:id="htmlEditor" prefHeight="320"/>
+  <HBox spacing="6">
+    <Button text="Attach"/>
+    <Region HBox.hgrow="ALWAYS"/>
+    <Button text="Send" onAction="#onSend"/>
+  </HBox>
+</VBox>

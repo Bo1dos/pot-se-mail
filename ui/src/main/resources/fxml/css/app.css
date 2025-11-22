@@ -1,0 +1,10 @@
+.root {
+    -fx-font-family: "Segoe UI", "Arial";
+    -fx-font-size: 13px;
+}
+.tool-bar {
+    -fx-background-color: linear-gradient(#f2f2f2, #e6e6e6);
+}
+.table-view {
+    -fx-table-cell-border-color: transparent;
+}

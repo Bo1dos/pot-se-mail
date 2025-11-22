@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?import javafx.scene.control.*?>
+<?import javafx.scene.layout.*?>
+<AnchorPane xmlns="http://javafx.com/javafx/17" xmlns:fx="http://javafx.com/fxml/1"
+            fx:controller="ru.study.ui.fx.controller.InboxController" prefHeight="400" prefWidth="420">
+  <TableView fx:id="inboxTable" AnchorPane.topAnchor="0" AnchorPane.leftAnchor="0" AnchorPane.rightAnchor="0" AnchorPane.bottomAnchor="0">
+    <columns>
+      <TableColumn text="From" prefWidth="140" />
+      <TableColumn text="Subject" prefWidth="240" />
+      <TableColumn text="Date" prefWidth="120" />
+    </columns>
+  </TableView>
+</AnchorPane>

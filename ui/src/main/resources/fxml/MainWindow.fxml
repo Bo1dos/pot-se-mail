@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?import javafx.scene.control.*?>
+<?import javafx.scene.layout.*?>
+<BorderPane xmlns="http://javafx.com/javafx/17" xmlns:fx="http://javafx.com/fxml/1"
+            fx:controller="ru.study.ui.fx.controller.MainWindowController">
+  <top>
+    <ToolBar>
+      <Button text="New"/>
+      <Separator/>
+      <Button text="Reply"/>
+      <Button text="Forward"/>
+      <Button text="Delete"/>
+      <Region fx:id="toolbarSpacer" HBox.hgrow="ALWAYS"/>
+      <Label text="Status: Ready" fx:id="statusLabel"/>
+    </ToolBar>
+  </top>
+
+  <left>
+    <VBox spacing="6" prefWidth="240" style="-fx-padding:8;">
+      <Label text="Accounts &amp; Folders"/>
+      <fx:include source="FoldersTree.fxml"/>
+    </VBox>
+  </left>
+
+  <center>
+    <VBox>
+      <Label text="Inbox" style="-fx-font-weight:bold; -fx-padding:6 0 6 6;"/>
+      <fx:include source="InboxView.fxml"/>
+    </VBox>
+  </center>
+
+  <right>
+    <TabPane prefWidth="480">
+      <Tab text="View">
+        <fx:include source="MessageView.fxml"/>
+      </Tab>
+      <Tab text="Compose">
+        <fx:include source="Composer.fxml"/>
+      </Tab>
+    </TabPane>
+  </right>
+
+  <bottom>
+    <HBox style="-fx-padding:6;">
+      <Label text="Ready" fx:id="bottomStatus"/>
+    </HBox>
+  </bottom>
+</BorderPane>
