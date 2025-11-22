@@ -1,0 +1,11 @@
+databaseChangeLog:
+  - changeSet:
+      id: 002-add-cc-column
+      author: Bo1dos
+      changes:
+        - addColumn:
+            tableName: messages
+            columns:
+              - column:
+                  name: cc
+                  type: CLOB

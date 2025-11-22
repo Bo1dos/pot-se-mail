@@ -1,0 +1,231 @@
+databaseChangeLog:
+  - changeSet:
+      id: 001-create-tables
+      author: Bo1dos
+      changes:
+        - createTable:
+            tableName: accounts
+            columns:
+              - column:
+                  name: id
+                  type: BIGINT
+                  autoIncrement: true
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: email
+                  type: VARCHAR(255)
+                  constraints:
+                    nullable: false
+                    unique: true
+              - column:
+                  name: display_name
+                  type: VARCHAR(255)
+              - column:
+                  name: imap_server
+                  type: VARCHAR(255)
+              - column:
+                  name: imap_port
+                  type: INT
+              - column:
+                  name: smtp_server
+                  type: VARCHAR(255)
+              - column:
+                  name: smtp_port
+                  type: INT
+              - column:
+                  name: use_tls
+                  type: BOOLEAN
+                  defaultValueBoolean: true
+              - column:
+                  name: cred_blob
+                  type: BLOB
+              - column:
+                  name: cred_iv
+                  type: VARBINARY(64)
+              - column:
+                  name: cred_salt
+                  type: VARBINARY(64)
+              - column:
+                  name: verifier_hash
+                  type: VARBINARY(256)
+              - column:
+                  name: verifier_salt
+                  type: VARBINARY(64)
+              - column:
+                  name: created_at
+                  type: TIMESTAMP
+                  defaultValueComputed: CURRENT_TIMESTAMP
+
+        - createTable:
+            tableName: keys
+            columns:
+              - column:
+                  name: id
+                  type: BIGINT
+                  autoIncrement: true
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: account_id
+                  type: BIGINT
+              - column:
+                  name: public_key_pem
+                  type: CLOB
+              - column:
+                  name: private_key_blob
+                  type: BLOB
+              - column:
+                  name: key_iv
+                  type: VARBINARY(64)
+              - column:
+                  name: key_salt
+                  type: VARBINARY(64)
+              - column:
+                  name: created_at
+                  type: TIMESTAMP
+                  defaultValueComputed: CURRENT_TIMESTAMP
+
+        - createTable:
+            tableName: folders
+            columns:
+              - column:
+                  name: id
+                  type: BIGINT
+                  autoIncrement: true
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: account_id
+                  type: BIGINT
+              - column:
+                  name: server_name
+                  type: VARCHAR(255)
+              - column:
+                  name: local_name
+                  type: VARCHAR(255)
+              - column:
+                  name: last_sync_uid
+                  type: BIGINT
+
+        - createTable:
+            tableName: messages
+            columns:
+              - column:
+                  name: id
+                  type: BIGINT
+                  autoIncrement: true
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: account_id
+                  type: BIGINT
+              - column:
+                  name: folder_id
+                  type: BIGINT
+              - column:
+                  name: server_uid
+                  type: VARCHAR(255)
+              - column:
+                  name: subject
+                  type: VARCHAR(1024)
+              - column:
+                  name: sender
+                  type: VARCHAR(255)
+              - column:
+                  name: recipients
+                  type: CLOB
+              - column:
+                  name: sent_date
+                  type: TIMESTAMP
+              - column:
+                  name: is_encrypted
+                  type: BOOLEAN
+                  defaultValueBoolean: false
+              - column:
+                  name: wrapped_key_blob
+                  type: BLOB
+              - column:
+                  name: encrypted_body_blob
+                  type: BLOB
+              - column:
+                  name: body_iv
+                  type: VARBINARY(64)
+              - column:
+                  name: signature_blob
+                  type: BLOB
+              - column:
+                  name: created_at
+                  type: TIMESTAMP
+                  defaultValueComputed: CURRENT_TIMESTAMP
+
+        - createTable:
+            tableName: attachments
+            columns:
+              - column:
+                  name: id
+                  type: BIGINT
+                  autoIncrement: true
+                  constraints:
+                    primaryKey: true
+                    nullable: false
+              - column:
+                  name: message_id
+                  type: BIGINT
+              - column:
+                  name: filename
+                  type: VARCHAR(512)
+              - column:
+                  name: content_type
+                  type: VARCHAR(255)
+              - column:
+                  name: file_path
+                  type: VARCHAR(1024)
+              - column:
+                  name: encrypted_blob
+                  type: BLOB
+              - column:
+                  name: iv
+                  type: VARBINARY(64)
+              - column:
+                  name: size
+                  type: BIGINT
+
+        - addForeignKeyConstraint:
+            baseTableName: keys
+            baseColumnNames: account_id
+            referencedTableName: accounts
+            referencedColumnNames: id
+            constraintName: fk_keys_account
+
+        - addForeignKeyConstraint:
+            baseTableName: folders
+            baseColumnNames: account_id
+            referencedTableName: accounts
+            referencedColumnNames: id
+            constraintName: fk_folders_account
+
+        - addForeignKeyConstraint:
+            baseTableName: messages
+            baseColumnNames: account_id
+            referencedTableName: accounts
+            referencedColumnNames: id
+            constraintName: fk_messages_account
+
+        - addForeignKeyConstraint:
+            baseTableName: messages
+            baseColumnNames: folder_id
+            referencedTableName: folders
+            referencedColumnNames: id
+            constraintName: fk_messages_folder
+
+        - addForeignKeyConstraint:
+            baseTableName: attachments
+            baseColumnNames: message_id
+            referencedTableName: messages
+            referencedColumnNames: id
+            constraintName: fk_attachments_message

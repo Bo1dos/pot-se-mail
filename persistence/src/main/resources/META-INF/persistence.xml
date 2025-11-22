@@ -1,0 +1,27 @@
+<persistence xmlns="https://jakarta.ee/xml/ns/persistence"
+             xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+             xsi:schemaLocation="https://jakarta.ee/xml/ns/persistence
+                                 https://jakarta.ee/xml/ns/persistence/persistence_3_0.xsd"
+             version="3.0">
+  <persistence-unit name="mailPU" transaction-type="RESOURCE_LOCAL">
+    <provider>org.hibernate.jpa.HibernatePersistenceProvider</provider>
+
+    <class>ru.study.persistence.entity.AccountEntity</class>
+    <class>ru.study.persistence.entity.KeyEntity</class>
+    <class>ru.study.persistence.entity.FolderEntity</class>
+    <class>ru.study.persistence.entity.MessageEntity</class>
+    <class>ru.study.persistence.entity.AttachmentEntity</class>
+
+    <properties>
+      <!-- Обычно параметры берутся из application.yml; для простоты заводим сюда -->
+      <property name="jakarta.persistence.jdbc.driver" value="org.h2.Driver"/>
+      <property name="jakarta.persistence.jdbc.url" value="jdbc:h2:file:./data/maildb;AUTO_SERVER=TRUE"/>
+      <property name="jakarta.persistence.jdbc.user" value="sa"/>
+      <property name="jakarta.persistence.jdbc.password" value=""/>
+      <property name="hibernate.dialect" value="org.hibernate.dialect.H2Dialect"/>
+      <!-- Так как миграции делает Liquibase, ставим validate -->
+      <property name="hibernate.hbm2ddl.auto" value="validate"/>
+      <property name="hibernate.show_sql" value="false"/>
+    </properties>
+  </persistence-unit>
+</persistence>
