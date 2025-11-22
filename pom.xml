@@ -14,11 +14,13 @@
     <java.version>21</java.version>
     <h2.version>2.4.240</h2.version>
     <hibernate.version>7.1.6.Final</hibernate.version>
+    <lombok.version>1.18.36</lombok.version>
     <jakarta.mail.version>2.0.2</jakarta.mail.version>
     <liquibase.version>5.0.1</liquibase.version>
     <slf4j.version>2.0.7</slf4j.version>
     <logback.version>1.5.21</logback.version>
     <javafx.plugin.version>0.0.8</javafx.plugin.version>
+    <maven.compiler.plugin.version>3.13.0</maven.compiler.plugin.version>
     <maven.compiler.source>${java.version}</maven.compiler.source>
     <maven.compiler.target>${java.version}</maven.compiler.target>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
@@ -46,6 +48,12 @@
         <groupId>org.hibernate.orm</groupId>
         <artifactId>hibernate-core</artifactId>
         <version>${hibernate.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.projectlombok</groupId>
+        <artifactId>lombok</artifactId>
+        <version>${lombok.version}</version>
+        <scope>provided</scope>
       </dependency>
       <dependency>
         <groupId>com.sun.mail</groupId>
@@ -76,9 +84,17 @@
         <!-- Compiler -->
         <plugin>
           <artifactId>maven-compiler-plugin</artifactId>
-          <version>3.11.0</version>
+          <version>${maven.compiler.plugin.version}</version>
           <configuration>
             <release>${java.version}</release>
+            <annotationProcessorPaths>
+              <path>
+                <groupId>org.projectlombok</groupId>
+                <artifactId>lombok</artifactId>
+                <version>${lombok.version}</version>
+              </path>
+            </annotationProcessorPaths>
+            <parameters>true</parameters>
           </configuration>
         </plugin>
 

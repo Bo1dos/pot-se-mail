@@ -32,12 +32,14 @@
       <artifactId>hibernate-core</artifactId>
     </dependency>
 
-    <!-- JPA API -->
+    <!-- Lomboc -->
     <dependency>
-      <groupId>jakarta.persistence</groupId>
-      <artifactId>jakarta.persistence-api</artifactId>
-      <version>3.1.0</version>
+      <groupId>org.projectlombok</groupId>
+      <artifactId>lombok</artifactId>
+      <scope>provided</scope>
     </dependency>
+
+
 
     <!-- SLF4J API -->
     <dependency>
@@ -45,4 +47,21 @@
       <artifactId>slf4j-api</artifactId>
     </dependency>
   </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.liquibase</groupId>
+        <artifactId>liquibase-maven-plugin</artifactId>
+        <version>${liquibase.version}</version>
+        <configuration>
+          <changeLogFile>src/main/resources/db/changelog/db.changelog-master.yaml</changeLogFile>
+          <url>jdbc:h2:file:./data/maildb;AUTO_SERVER=TRUE</url>
+          <username>sa</username>
+          <password></password>
+          <driver>org.h2.Driver</driver>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
 </project>

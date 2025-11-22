@@ -14,6 +14,11 @@
   <packaging>jar</packaging>
   <name>mail-ui</name>
 
+  <properties>
+    <javafx.version>21.0.2</javafx.version>
+    <javafx.platform>win</javafx.platform>
+  </properties>
+
   <dependencies>
     <dependency>
       <groupId>ru.study</groupId>
@@ -33,9 +38,24 @@
       <artifactId>slf4j-api</artifactId>
     </dependency>
 
-    <!-- JavaFX dependencies could be declared here if needed by your build/runtime.
-         Often javafx-maven-plugin supplies modules; keep optional for now.
-    -->
+    <dependency>
+      <groupId>org.openjfx</groupId>
+      <artifactId>javafx-controls</artifactId>
+      <version>${javafx.version}</version>
+      <classifier>${javafx.platform}</classifier>
+    </dependency>
+    <dependency>
+      <groupId>org.openjfx</groupId>
+      <artifactId>javafx-fxml</artifactId>
+      <version>${javafx.version}</version>
+      <classifier>${javafx.platform}</classifier>
+    </dependency>
+    <dependency>
+      <groupId>org.openjfx</groupId>
+      <artifactId>javafx-web</artifactId>
+      <version>${javafx.version}</version>
+      <classifier>${javafx.platform}</classifier>
+    </dependency>
   </dependencies>
 
   <build>

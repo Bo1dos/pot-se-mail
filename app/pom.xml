@@ -8,6 +8,11 @@
   <artifactId>app</artifactId>
   <packaging>jar</packaging>
 
+<properties>
+  <javafx.version>21.0.2</javafx.version>
+  <javafx.classifier>win</javafx.classifier>
+</properties>
+
   <dependencies>
     <dependency>
       <groupId>ru.study</groupId>
@@ -24,6 +29,26 @@
       <artifactId>persistence</artifactId>
       <version>${project.parent.version}</version>
     </dependency>
+
+    <dependency>
+    <groupId>org.openjfx</groupId>
+    <artifactId>javafx-controls</artifactId>
+    <version>${javafx.version}</version>
+    <classifier>${javafx.classifier}</classifier>
+  </dependency>
+
+  <dependency>
+    <groupId>org.openjfx</groupId>
+    <artifactId>javafx-fxml</artifactId>
+    <version>${javafx.version}</version>
+    <classifier>${javafx.classifier}</classifier>
+  </dependency>
+  <dependency>
+    <groupId>org.openjfx</groupId>
+    <artifactId>javafx-web</artifactId>
+    <version>${javafx.version}</version>
+    <classifier>${javafx.classifier}</classifier>
+  </dependency>
 
     <!-- H2 -->
     <dependency>
@@ -44,6 +69,15 @@
 
   <build>
     <plugins>
+      <plugin>
+        <groupId>org.openjfx</groupId>
+        <artifactId>javafx-maven-plugin</artifactId>
+        <version>${javafx.plugin.version}</version>
+        <configuration>
+          <mainClass>ru.study.app.Main</mainClass>
+        </configuration>
+      </plugin>
+      
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-shade-plugin</artifactId>
