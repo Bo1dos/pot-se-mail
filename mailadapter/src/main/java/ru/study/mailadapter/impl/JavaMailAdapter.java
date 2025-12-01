@@ -205,14 +205,13 @@ public class JavaMailAdapter implements MailAdapter {
 
     @Override
     public synchronized void send(RawOutgoingMail mail) throws MailException {
-        log.info("Sending mail from '{}' with subject '{}' and {} attachments", 
-                mail.getFrom(), mail.getSubject(), 
+        log.info("Sending mail from '{}' with subject '{}' and {} attachments",
+                mail.getFrom(), mail.getSubject(),
                 mail.getAttachments() == null ? 0 : mail.getAttachments().size());
-                
-        // builds MimeMessage and sends via SMTP
+
         try {
+            // Ensure SMTP session exists (may be created only for SMTP)
             if (session == null) {
-                // create a new session for SMTP using currentConfig if available
                 if (currentConfig == null) throw new MailSendException("No SMTP configuration available", null);
                 Properties props = new Properties();
                 props.put("mail.smtp.host", currentConfig.getSmtpHost());
@@ -227,7 +226,7 @@ public class JavaMailAdapter implements MailAdapter {
             addAddresses(message, Message.RecipientType.TO, mail.getTo());
             addAddresses(message, Message.RecipientType.CC, mail.getCc());
             addAddresses(message, Message.RecipientType.BCC, mail.getBcc());
-            message.setSubject(mail.getSubject());
+            message.setSubject(mail.getSubject(), "utf-8");
 
             if (mail.getAttachments() == null || mail.getAttachments().isEmpty()) {
                 if (mail.isHtml()) {
@@ -236,7 +235,6 @@ public class JavaMailAdapter implements MailAdapter {
                     message.setText(mail.getBody(), "utf-8");
                 }
             } else {
-                // multipart with body part + attachments
                 MimeBodyPart bodyPart = new MimeBodyPart();
                 if (mail.isHtml()) bodyPart.setContent(mail.getBody(), "text/html; charset=utf-8");
                 else bodyPart.setText(mail.getBody(), "utf-8");
@@ -247,24 +245,23 @@ public class JavaMailAdapter implements MailAdapter {
                 for (OutgoingAttachment att : mail.getAttachments()) {
                     MimeBodyPart attPart = new MimeBodyPart();
                     DataSource ds;
-                    InputStream in = att.getInput();
+
+                    // 1) если есть файл — используем FileDataSource (ленивое чтение)
                     if (att.getFile() != null) {
-                        // file-backed — use streaming FileDataSource
-                        try {
-                            ds = new FileDataSource(att.getFile());
-                            log.debug("Using FileDataSource for file-backed attachment: {}", att.getFilename());
-                        } catch (Exception ex) {
-                            log.warn("FileDataSource failed for {}, falling back to InputStream", att.getFilename(), ex);
-                            // fallback to InputStreamDataSource if file can't be used
-                            if (in == null) in = new ByteArrayInputStream(new byte[0]);
-                            ds = new InputStreamDataSource(in, att.getContentType() == null ? "application/octet-stream" : att.getContentType(), att.getFilename());
-                        }
-                    } else if (in == null) {
-                        ds = new ByteArrayDataSource(new byte[0], att.getContentType() == null ? "application/octet-stream" : att.getContentType());
+                        ds = new FileDataSource(att.getFile());
+                        log.debug("Using FileDataSource for file-backed attachment: {}", att.getFilename());
+                    } else if (att.getInput() != null) {
+                        // 2) если есть InputStream — читаем в память и используем ByteArrayDataSource
+                        // Это безопасно: гарантируем возможность повторного чтения.
+                        byte[] bytes = toBytes(att.getInput()); // метод у вас уже есть, он закроет поток
+                        String ct = att.getContentType() == null ? "application/octet-stream" : att.getContentType();
+                        ds = new ByteArrayDataSource(bytes, ct);
+                        log.debug("Using ByteArrayDataSource for stream-backed attachment: {} ({} bytes)", att.getFilename(), bytes.length);
                     } else {
-                        // streaming DataSource that hands InputStream to JavaMail (does not read whole file here)
-                        ds = new InputStreamDataSource(in, att.getContentType() == null ? "application/octet-stream" : att.getContentType(), att.getFilename());
+                        ds = new ByteArrayDataSource(new byte[0], "application/octet-stream");
+                        log.debug("Attachment has no content: {}", att.getFilename());
                     }
+
                     attPart.setDataHandler(new DataHandler(ds));
                     attPart.setFileName(att.getFilename());
                     attPart.setDisposition(Part.ATTACHMENT);
@@ -274,7 +271,7 @@ public class JavaMailAdapter implements MailAdapter {
                 message.setContent(mp);
             }
 
-            // send via Transport
+            // --- send via SMTP ---
             Transport transport = session.getTransport("smtp");
             try {
                 transport.connect(currentConfig.getSmtpHost(), currentConfig.getUsername(), currentConfig.getPassword());
@@ -283,11 +280,23 @@ public class JavaMailAdapter implements MailAdapter {
             } finally {
                 try { transport.close(); } catch (MessagingException ignored) {}
             }
+
+            // --- append to Sent folder on server (best-effort, failures are non-fatal) ---
+            try {
+                appendMessageToSentFolder(message);
+            } catch (Exception e) {
+                log.warn("Appending sent message to Sent folder failed (non-fatal)", e);
+            }
+
         } catch (MessagingException e) {
             log.error("Failed to send mail from '{}' with subject '{}'", mail.getFrom(), mail.getSubject(), e);
             throw new MailSendException("Failed to send message", e);
+        } catch (IOException e) {
+            log.error("I/O error while preparing attachments", e);
+            throw new MailSendException("Failed to prepare attachments", e);
         }
     }
+
 
     // ---------------- helpers ----------------
 
@@ -450,4 +459,66 @@ public class JavaMailAdapter implements MailAdapter {
             return name;
         }
     }
+
+    private void appendMessageToSentFolder(MimeMessage message) {
+        if (currentConfig == null) {
+            log.debug("No account config, skipping append to Sent");
+            return;
+        }
+
+        Store useStore = null;
+        boolean localStoreCreated = false;
+        try {
+            // Если у нас есть уже подключённый store — используем его, иначе создаём временный.
+            if (store != null && store.isConnected()) {
+                useStore = store;
+            } else {
+                Properties p = new Properties();
+                p.put("mail.store.protocol", "imap");
+                p.put("mail.imap.host", currentConfig.getImapHost());
+                p.put("mail.imap.port", String.valueOf(currentConfig.getImapPort()));
+                p.put("mail.imap.ssl.enable", String.valueOf(currentConfig.isImapSsl()));
+                Session imapSession = Session.getInstance(p);
+                useStore = imapSession.getStore("imap");
+                useStore.connect(currentConfig.getImapHost(), currentConfig.getUsername(), currentConfig.getPassword());
+                localStoreCreated = true;
+            }
+
+            // Найдём подходящую папку Sent (попробуем несколько вариантов)
+            String[] candidates = new String[]{"Sent", "Sent Items", "[Gmail]/Sent Mail", "INBOX.Sent", "Отправленные", "Входящие/Отправленные"};
+            Folder sentFolder = null;
+            for (String c : candidates) {
+                Folder f = useStore.getFolder(c);
+                if (f != null && f.exists()) { sentFolder = f; break; }
+            }
+            if (sentFolder == null) {
+                // fallback: папка "Sent" (создаём если надо)
+                sentFolder = useStore.getFolder("Sent");
+                if (!sentFolder.exists()) {
+                    try { sentFolder.create(Folder.HOLDS_MESSAGES); } catch (MessagingException ignore) {}
+                }
+            }
+
+            if (sentFolder == null) {
+                log.debug("No Sent folder found/created, skipping append");
+                return;
+            }
+
+            sentFolder.open(Folder.READ_WRITE);
+            // Чтобы не зависеть от DataSource, создаём копию сообщения из байтов (fully materialize)
+            ByteArrayOutputStream bout = new ByteArrayOutputStream();
+            message.writeTo(bout);
+            MimeMessage copy = new MimeMessage(Session.getDefaultInstance(new Properties()), new ByteArrayInputStream(bout.toByteArray()));
+            sentFolder.appendMessages(new Message[]{copy});
+            sentFolder.close(false);
+            log.debug("Appended message to Sent folder");
+        } catch (Exception e) {
+            log.warn("Failed to append message to Sent folder", e);
+        } finally {
+            if (localStoreCreated && useStore != null) {
+                try { useStore.close(); } catch (MessagingException ignored) {}
+            }
+        }
+    }
+
 }

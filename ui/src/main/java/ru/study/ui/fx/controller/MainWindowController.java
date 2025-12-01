@@ -33,6 +33,7 @@ public class MainWindowController {
     // Added fields for controller linking
     private InboxController inboxController;
     private FoldersController foldersController;
+    private MessageViewController messageViewController;
 
     private final Consumer<NotificationEvent> notifHandler = this::onNotification;
     private final Consumer<NewMessageEvent> newMsgHandler = this::onNewMessage;
@@ -70,6 +71,139 @@ public class MainWindowController {
             // Set default folder
             inboxController.setFolder("INBOX");
         }
+
+        // Устанавливаем callback на выбор сообщения из inbox
+        // он будет загружать MessageDetailDTO через mailService.getMessage(...) в фоне и показывать HTML в MessageViewController
+        inboxController.setOnMessageSelected(messageId -> {
+            if (messageId == null) return;
+
+            // Получаем текущий выбранный аккаунт id из combobox (MainWindow всегда владеет этим контролом)
+            AccountDTO selected = accountsCombo.getSelectionModel().getSelectedItem();
+            if (selected == null) {
+                eventBus.publish(new NotificationEvent(NotificationLevel.ERROR, "No account selected to load message", null));
+                return;
+            }
+            Long accountId = selected.id();
+
+            // safety: need messageViewController to be present
+            if (messageViewController == null) {
+                eventBus.publish(new NotificationEvent(NotificationLevel.ERROR, "Message view not available", null));
+                return;
+            }
+
+            // Загрузка в фоне
+            java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+                try {
+                    // mailService.getMessage может бросать CoreException
+                    return mailService.getMessage(accountId, messageId);
+                } catch (Exception ex) {
+                    // оборачиваем исключение для thenAccept блоков
+                    throw new RuntimeException(ex);
+                }
+            }).thenAccept(detail -> {
+                // detail может быть null — покажем соответствующий текст
+                Platform.runLater(() -> {
+                    try {
+                        if (detail == null) {
+                            messageViewController.showHtml("<p>(no content)</p>");
+                            eventBus.publish(new NotificationEvent(NotificationLevel.INFO, "Message not found", null));
+                            return;
+                        }
+
+                        String html = null;
+
+                        // Список candidate-методов/полей, которые чаще всего встречаются
+                        String[] candidates = new String[] {
+                            "bodyHtml", "getBodyHtml",
+                            "html", "getHtml",
+                            "body", "getBody",
+                            "text", "getText",
+                            "bodyText", "getBodyText",
+                            "htmlBody", "getHtmlBody"
+                        };
+
+                        // Попробуем вызвать методы
+                        for (String name : candidates) {
+                            if (html != null && !html.isBlank()) break;
+                            try {
+                                // сначала пытаемся как метод без аргументов
+                                java.lang.reflect.Method m = detail.getClass().getMethod(name);
+                                if (m != null) {
+                                    Object val = m.invoke(detail);
+                                    if (val instanceof String) {
+                                        html = (String) val;
+                                        break;
+                                    }
+                                }
+                            } catch (NoSuchMethodException ignore) {
+                                // метод отсутствует — пробуем поле ниже
+                            } catch (Exception ex) {
+                                // какое-то исключение при вызове — логним и продолжаем
+                                eventBus.publish(new NotificationEvent(NotificationLevel.ERROR, "Failed to call " + name + "(): " + ex.getMessage(), ex));
+                            }
+
+                            // если метода нет — пробуем как поле (record-поля тоже видны как get-методы, но на всякий)
+                            try {
+                                java.lang.reflect.Field f = detail.getClass().getDeclaredField(name);
+                                f.setAccessible(true);
+                                Object val = f.get(detail);
+                                if (val instanceof String) {
+                                    html = (String) val;
+                                    break;
+                                }
+                            } catch (NoSuchFieldException ignore) {
+                            } catch (Exception ex) {
+                                eventBus.publish(new NotificationEvent(NotificationLevel.ERROR, "Failed to read field " + name + ": " + ex.getMessage(), ex));
+                            }
+                        }
+
+                        // Fallbacks: если html пустой — попробуем взять plain text поле, или subject/snippet из DTO
+                        if (html == null || html.isBlank()) {
+                            // попробуем искать subject или snippet поля, чтобы показать хоть что-то
+                            String fallback = null;
+                            try {
+                                // common getters: subject(), getSubject()
+                                try {
+                                    java.lang.reflect.Method msub = detail.getClass().getMethod("subject");
+                                    Object v = msub.invoke(detail);
+                                    if (v instanceof String) fallback = (String) v;
+                                } catch (NoSuchMethodException ignore) {
+                                    try {
+                                        java.lang.reflect.Method msub2 = detail.getClass().getMethod("getSubject");
+                                        Object v2 = msub2.invoke(detail);
+                                        if (v2 instanceof String) fallback = (String) v2;
+                                    } catch (NoSuchMethodException ignore2) {}
+                                }
+                            } catch (Exception ex) {
+                                // ignore
+                            }
+
+                            if (fallback == null || fallback.isBlank()) {
+                                // последний вариант — toString()
+                                fallback = detail.toString();
+                            }
+
+                            // Показываем fallback в простой обёртке
+                            String wrapped = "<html><body><pre>" + escapeHtml(fallback) + "</pre></body></html>";
+                            messageViewController.showHtml(wrapped);
+                            eventBus.publish(new NotificationEvent(NotificationLevel.INFO, "Shown fallback content (no HTML). length=" + wrapped.length(), null));
+                        } else {
+                            // Если нашли HTML — покажем напрямую
+                            messageViewController.showHtml(html);
+                            eventBus.publish(new NotificationEvent(NotificationLevel.INFO, "Shown HTML content, len=" + (html == null ? 0 : html.length()), null));
+                        }
+
+                    } catch (Exception uiEx) {
+                        eventBus.publish(new NotificationEvent(NotificationLevel.ERROR, "Failed to render message: " + uiEx.getMessage(), uiEx));
+                        messageViewController.showHtml("<p>(render error)</p>");
+                    }
+                });
+            }).exceptionally(ex -> {
+                Throwable cause = ex instanceof java.util.concurrent.CompletionException ? ex.getCause() : ex;
+                eventBus.publish(new NotificationEvent(NotificationLevel.ERROR, "Failed to load message: " + cause.getMessage(), cause));
+                return null;
+            });
+        });
     }
 
     public void setFoldersController(FoldersController f) {
@@ -81,6 +215,10 @@ public class MainWindowController {
                 inboxController.setFolder(folderName);
             }
         });
+    }
+
+    public void setMessageViewController(MessageViewController mvc) {
+        this.messageViewController = mvc;
     }
 
     private void onNotification(NotificationEvent ev) {
@@ -210,5 +348,11 @@ public class MainWindowController {
         } catch (Exception e) {
             eventBus.publish(new NotificationEvent(NotificationLevel.ERROR, "Failed to open Master Password dialog: " + e.getMessage(), e));
         }
+    }
+
+    // Вспомогательный метод для экранирования HTML
+    private static String escapeHtml(String s) {
+        if (s == null) return "";
+        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
     }
 }

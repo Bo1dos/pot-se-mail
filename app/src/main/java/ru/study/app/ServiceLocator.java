@@ -142,34 +142,34 @@ public class ServiceLocator {
 
         // --- CREATE CONTROLLERS WITH DEPENDENCIES ---
         
-        // Create InboxController
+        // create controllers (singletons)
         ru.study.ui.fx.controller.InboxController inboxCtrl =
                 new ru.study.ui.fx.controller.InboxController(mailService, eventBus);
-        
-        // Create FoldersController
         ru.study.ui.fx.controller.FoldersController foldersCtrl =
                 new ru.study.ui.fx.controller.FoldersController(accountService, folderService, eventBus);
         
-        // Create MainWindowController
+        // Message view controller (no-arg)
+        ru.study.ui.fx.controller.MessageViewController messageViewCtrl =
+                new ru.study.ui.fx.controller.MessageViewController();
+        
+        // Main window controller
         ru.study.ui.fx.controller.MainWindowController mainCtrl =
                 new ru.study.ui.fx.controller.MainWindowController(mailService, eventBus, accountService, masterPasswordService, syncService);
         
-        // LINK CONTROLLERS TOGETHER
+        // связываем контроллеры между собой
         mainCtrl.setInboxController(inboxCtrl);
         mainCtrl.setFoldersController(foldersCtrl);
-
-        // Register controllers so FXMLLoader obtains constructor-injected instances
-        registerSingleton(ru.study.ui.fx.controller.MainWindowController.class, () -> mainCtrl);
+        mainCtrl.setMessageViewController(messageViewCtrl);
+        
+        // РЕГИСТРАЦИЯ бинов (чтобы FXMLLoader и прочие могли получить экземпляры)
         registerSingleton(ru.study.ui.fx.controller.InboxController.class, () -> inboxCtrl);
         registerSingleton(ru.study.ui.fx.controller.FoldersController.class, () -> foldersCtrl);
+        registerSingleton(ru.study.ui.fx.controller.MessageViewController.class, () -> messageViewCtrl);
+        registerSingleton(ru.study.ui.fx.controller.MainWindowController.class, () -> mainCtrl);
 
         // Other controllers...
         registerSingleton(ru.study.ui.fx.controller.ComposerController.class,
                 () -> new ru.study.ui.fx.controller.ComposerController(mailService, eventBus, accountService));
-        
-        // MessageViewController has no-arg constructor — can be newed directly
-        registerSingleton(ru.study.ui.fx.controller.MessageViewController.class,
-                () -> new ru.study.ui.fx.controller.MessageViewController());
         
         registerSingleton(ru.study.ui.fx.controller.LoginDialogController.class,
                 () -> new ru.study.ui.fx.controller.LoginDialogController());
