@@ -49,6 +49,7 @@ public class ServiceLocator {
     private final SyncService syncService;
     private final MailService mailService;
     private final KeyServerClient keyServerClient;
+    private final FolderService folderService;
 
     public ServiceLocator() {
         log.info("Creating ServiceLocator (MVP wiring)");
@@ -70,6 +71,7 @@ public class ServiceLocator {
         FolderRepository folderRepository = new FolderRepositoryImpl(em);
         AttachmentRepository attachmentRepository = new AttachmentRepositoryImpl(em);
         MessageWrappedKeyRepository messageWrappedKeyRepository = new MessageWrappedKeyRepositoryImpl(em);
+        
 
         // notification
         this.notificationService = new NotificationServiceImpl(eventBus);
@@ -84,6 +86,8 @@ public class ServiceLocator {
         this.accountService = new AccountServiceImpl(
                 accountRepository, keyManagement, masterPasswordService, mailAdapter
         );
+
+        this.folderService = new FolderServiceImpl(accountRepository, messageRepository);
 
         this.keyManagementService = new KeyManagementServiceImpl(
                 keyRepository, accountRepository, cryptoProviderFactory.getAsymmetricCipher("RSA"), keyManagement, eventBus
@@ -124,6 +128,8 @@ public class ServiceLocator {
         registerSingleton(MailService.class, () -> mailService);
         registerSingleton(SyncService.class, () -> syncService);
         registerSingleton(KeyServerClient.class, () -> keyServerClient);
+        
+        registerSingleton(FolderService.class, () -> folderService);
 
         // also expose repositories if needed by other modules
         registerSingleton(AccountRepository.class, () -> accountRepository);
@@ -150,8 +156,10 @@ public class ServiceLocator {
                 () -> new ru.study.ui.fx.controller.MessageViewController());
 
         // other UI controllers (optional) — register if you implemented constructor injection:
-        registerSingleton(ru.study.ui.fx.controller.FoldersController.class,
-                () -> new ru.study.ui.fx.controller.FoldersController());
+        ru.study.ui.fx.controller.FoldersController foldersCtrl =
+                new ru.study.ui.fx.controller.FoldersController(accountService, folderService, eventBus);
+        registerSingleton(ru.study.ui.fx.controller.FoldersController.class, () -> foldersCtrl);
+        
         registerSingleton(ru.study.ui.fx.controller.LoginDialogController.class,
                 () -> new ru.study.ui.fx.controller.LoginDialogController());
         registerSingleton(ru.study.ui.fx.controller.ProgressController.class,

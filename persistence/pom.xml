@@ -44,6 +44,11 @@
       <artifactId>liquibase-core</artifactId> 
     </dependency>
 
+    <dependency>
+      <groupId>com.sun.mail</groupId>
+      <artifactId>jakarta.mail</artifactId>
+  </dependency>
+
 
 
     <!-- SLF4J API -->

@@ -16,7 +16,6 @@ import ru.study.mailadapter.model.RawMail;
 import ru.study.persistence.entity.FolderEntity;
 import ru.study.persistence.entity.MessageEntity;
 import ru.study.persistence.mapper.MessageMapper;
-import ru.study.persistence.mapper.FolderMapper;
 import ru.study.persistence.repository.api.AttachmentRepository;
 import ru.study.persistence.repository.api.FolderRepository;
 import ru.study.persistence.repository.api.MessageRepository;
@@ -31,11 +30,15 @@ import ru.study.service.dto.SyncResult;
 import ru.study.mailadapter.model.AccountConfig;
 
 import jakarta.persistence.EntityManager;
-import jakarta.persistence.EntityTransaction;
 import java.util.List;
 import java.util.concurrent.*;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 public class SyncServiceImpl implements SyncService {
+
+    private static final Logger log = LoggerFactory.getLogger(SyncServiceImpl.class);
 
     private final MailAdapter mailAdapter;
     private final NotificationService notificationService;
@@ -45,7 +48,7 @@ public class SyncServiceImpl implements SyncService {
 
     public SyncServiceImpl(MailAdapter mailAdapter,
                            NotificationService notificationService,
-                           ru.study.core.event.bus.EventBus eventBus,
+                           EventBus eventBus,
                            AccountService accountService) {
         this.mailAdapter = mailAdapter;
         this.notificationService = notificationService;
@@ -57,7 +60,7 @@ public class SyncServiceImpl implements SyncService {
             return t;
         });
     }
-
+    
     @Override
     public void syncAccount(Long accountId) throws CoreException {
         eventBus.publish(new SyncStartedEvent(accountId));
@@ -76,16 +79,67 @@ public class SyncServiceImpl implements SyncService {
             try {
                 FolderRepository folderRepo = new FolderRepositoryImpl(em);
                 List<FolderEntity> folders = folderRepo.findByAccountId(accountId);
-                for (FolderEntity f : folders) {
+
+                // If no local folders found — try to fetch server folders and create local entries (MVP)
+                if (folders == null || folders.isEmpty()) {
+                    log.debug("No local folders found for account {}, will query server folders and create local entries", accountId);
                     try {
-                        // this syncFolder implementation will assume adapter is already connected
-                        syncFolderInternal(em, accountId, f.getServerName());
-                    } catch (Exception ex) {
-                        success = false;
-                        details = "error during folder sync: " + ex.getMessage();
-                        notificationService.notifyError("Sync folder failed: " + f.getServerName(), ex);
+                        List<ru.study.mailadapter.model.MailFolder> serverFolders = mailAdapter.listFolders();
+                        if (serverFolders != null && !serverFolders.isEmpty()) {
+                            for (ru.study.mailadapter.model.MailFolder mf : serverFolders) {
+                                try {
+                                    FolderEntity fe = new FolderEntity();
+                                    fe.setAccountId(accountId);
+
+                                    // try to use common getters; fallback to toString()
+                                    String srvName = null;
+                                    try {
+                                        srvName = (String) mf.getClass().getMethod("getFullName").invoke(mf);
+                                    } catch (NoSuchMethodException nsme) {
+                                        try {
+                                            srvName = (String) mf.getClass().getMethod("getName").invoke(mf);
+                                        } catch (Exception ignore) {
+                                            srvName = mf.toString();
+                                        }
+                                    }
+
+                                    fe.setServerName(srvName);
+                                    fe.setLocalName(srvName);
+                                    fe.setLastSyncUid(null);
+                                    
+
+                                    // call repo save (we DO NOT open tx manually here by your request)
+                                    folderRepo.save(fe);
+                                    log.info("Requested creation of local folder record: {} for account {}", srvName, accountId);
+                                } catch (Exception feEx) {
+                                    log.warn("Failed to create local folder entry for folder {}: {}", mf, feEx.getMessage());
+                                }
+                            }
+                            // reload list from DB to get managed entities / IDs (may depend on repo tx behavior)
+                            folders = folderRepo.findByAccountId(accountId);
+                        } else {
+                            log.debug("Server returned no folders for account {}", accountId);
+                        }
+                    } catch (Exception lfEx) {
+                        log.warn("Failed to list folders from server for account {}: {}", accountId, lfEx.getMessage());
+                        notificationService.notifyError("Failed to list server folders for account " + accountId, lfEx);
                     }
                 }
+
+                // then continue with existing loop over folders
+                if (folders != null) {
+                    for (FolderEntity f : folders) {
+                        try {
+                            log.debug("Syncing folder {} for account {}", f.getServerName(), accountId);
+                            syncFolderInternal(em, accountId, f.getServerName());
+                        } catch (Exception ex) {
+                            success = false;
+                            details = "error during folder sync: " + ex.getMessage();
+                            notificationService.notifyError("Sync folder failed: " + f.getServerName(), ex);
+                        }
+                    }
+                }
+
             } finally {
                 if (em.isOpen()) em.close();
             }
@@ -114,6 +168,7 @@ public class SyncServiceImpl implements SyncService {
                         try {
                             syncAccount(aid);
                         } catch (Exception ex) {
+                            log.warn("Auto-sync account {} failed: {}", aid, ex.getMessage(), ex);
                             notificationService.notifyError("Auto-sync account failed: " + aid, ex);
                         }
                     }
@@ -121,16 +176,19 @@ public class SyncServiceImpl implements SyncService {
                     if (em.isOpen()) em.close();
                 }
             } catch (Throwable t) {
+                log.error("Auto-sync fatal error: {}", t.getMessage(), t);
                 notificationService.notifyError("Auto-sync fatal error", t);
             }
         }, 0, 5, TimeUnit.MINUTES);
         notificationService.notifyInfo("Auto-sync started");
+        log.info("Auto-sync scheduler started (interval: 5 minutes)");
     }
 
     @Override
     public void stopAutoSync() {
         scheduler.shutdownNow();
         notificationService.notifyInfo("Auto-sync stopped");
+        log.info("Auto-sync scheduler stopped");
     }
 
     /**
@@ -153,16 +211,22 @@ public class SyncServiceImpl implements SyncService {
         } catch (NotFoundException nf) {
             throw nf;
         } catch (Exception e) {
+            log.error("Sync folder {} for account {} failed: {}", folderName, accountService, e.getMessage(), e);
             notificationService.notifyError("Sync folder failed: " + folderName, e);
             return SyncResult.builder().newMessages(0).errors(List.of("error: " + e.getMessage())).build();
         } finally {
-            try { mailAdapter.disconnect(); } catch (Exception ignored) {}
+            try {
+                mailAdapter.disconnect();
+            } catch (Exception ignored) {
+                log.debug("Ignoring exception on mailAdapter.disconnect(): {}", ignored.getMessage());
+            }
         }
     }
 
     /**
      * Internal: assumes mailAdapter is already connected for the account.
      * Uses provided EntityManager (caller must open/close).
+     * No explicit transactions here — repositories are expected to handle them.
      * @throws MailException 
      */
     private void syncFolderInternal(EntityManager em, Long accountId, String folderName) throws MailException {
@@ -175,20 +239,21 @@ public class SyncServiceImpl implements SyncService {
 
         long sinceUid = folderEntity.getLastSyncUid() == null ? 0L : folderEntity.getLastSyncUid();
 
+        log.debug("Fetching headers for account={}, folder={} sinceUid={}", accountId, folderName, sinceUid);
         List<MailHeader> headers = mailAdapter.fetchHeaders(folderName, sinceUid, 200);
 
         int newCount = 0;
         for (MailHeader h : headers) {
             String serverUid = String.valueOf(h.getUid());
             boolean exists = messageRepo.findByAccountAndServerUid(accountId, serverUid).isPresent();
-            if (exists) continue;
+            if (exists) {
+                log.debug("Message with serverUid={} already exists for account {}, skipping", serverUid, accountId);
+                continue;
+            }
 
             RawMail raw = mailAdapter.fetchMessage(folderName, h.getUid());
 
-            EntityTransaction tx = em.getTransaction();
             try {
-                tx.begin();
-
                 MessageEntity me = new MessageEntity();
                 me.setAccountId(accountId);
                 me.setFolder(folderEntity);
@@ -204,39 +269,51 @@ public class SyncServiceImpl implements SyncService {
                 me.setIsSeen(h.isSeen());
                 me.setIsDeleted(Boolean.FALSE);
 
-                MessageEntity saved = messageRepo.save(me);
+                MessageEntity saved = messageRepo.save(me); // repo expected to handle tx
 
                 if (raw.getAttachments() != null && !raw.getAttachments().isEmpty()) {
                     for (AttachmentDescriptor ad : raw.getAttachments()) {
-                        var att = new ru.study.persistence.entity.AttachmentEntity();
-                        att.setMessage(saved);
-                        att.setFilename(ad.getFileName());
-                        att.setContentType(ad.getContentType());
-                        att.setSize(ad.getSize() < 0 ? null : ad.getSize());
-                        att.setFilePath(null);
-                        att.setEncryptedBlob(null);
-                        attachmentRepo.save(att);
+                        try {
+                            var att = new ru.study.persistence.entity.AttachmentEntity();
+                            att.setMessage(saved);
+                            att.setFilename(ad.getFileName());
+                            att.setContentType(ad.getContentType());
+                            att.setSize(ad.getSize() < 0 ? null : ad.getSize());
+                            att.setFilePath(null);
+                            att.setEncryptedBlob(null);
+                            attachmentRepo.save(att); // repo expected to handle tx
+                        } catch (Exception attEx) {
+                            log.warn("Failed to persist attachment for message {}: {}", serverUid, attEx.getMessage(), attEx);
+                            notificationService.notifyError("Failed to persist attachment for message " + serverUid, attEx);
+                        }
                     }
                 }
 
-                folderEntity.setLastSyncUid(Math.max(folderEntity.getLastSyncUid() == null ? 0L : folderEntity.getLastSyncUid(), h.getUid()));
-                folderRepo.save(folderEntity);
-
-                tx.commit();
+                // update folder last sync uid and persist
+                try {
+                    long currentLast = folderEntity.getLastSyncUid() == null ? 0L : folderEntity.getLastSyncUid();
+                    folderEntity.setLastSyncUid(Math.max(currentLast, h.getUid()));
+                    folderRepo.save(folderEntity); // repo expected to handle tx
+                } catch (Exception fex) {
+                    log.warn("Failed to update folder lastSyncUid for {}: {}", folderName, fex.getMessage(), fex);
+                    notificationService.notifyError("Failed to update folder sync state: " + folderName, fex);
+                }
 
                 Message domain = MessageMapper.toDomain(saved);
                 MessageSummaryDTO summary = MessageMapper.toSummaryDto(domain);
                 eventBus.publish(new NewMessageEvent(summary));
 
                 newCount++;
+                log.info("New message persisted account={}, folder={}, uid={}", accountId, folderName, serverUid);
             } catch (Exception e) {
-                if (tx.isActive()) tx.rollback();
+                log.warn("Failed to persist incoming message uid={} for account {} folder {}: {}", h.getUid(), accountId, folderName, e.getMessage(), e);
                 notificationService.notifyError("Failed to persist incoming message uid=" + h.getUid(), e);
+                // continue with next header
             }
         }
 
         String details = "synced folder: " + folderName + ", new=" + newCount;
         notificationService.notifyInfo(details);
-        // optional: could return per-folder SyncResult; here we just publish info
+        log.info(details);
     }
 }

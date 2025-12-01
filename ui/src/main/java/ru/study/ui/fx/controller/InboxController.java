@@ -8,6 +8,7 @@ import javafx.scene.control.TableColumn;
 import javafx.scene.control.cell.PropertyValueFactory;
 import ru.study.core.dto.MessageSummaryDTO;
 import ru.study.core.event.NewMessageEvent;
+import ru.study.core.event.SyncCompletedEvent;
 import ru.study.core.event.bus.EventBus;
 import ru.study.service.api.MailService;
 
@@ -31,6 +32,12 @@ public class InboxController {
     // callback to notify parent (MainWindowController) when a message row is selected
     private Consumer<Long> onMessageSelected = id -> {};
 
+    private Long currentAccountId = null;
+    private String currentFolder = "INBOX";
+
+
+
+
     public InboxController(MailService mailService, EventBus eventBus) {
         this.mailService = mailService;
         this.eventBus = eventBus;
@@ -50,23 +57,41 @@ public class InboxController {
         // subscribe to new message events
         eventBus.subscribe(NewMessageEvent.class, newMsgHandler);
 
-        // selection listener: notify parent about selected message id
+        // subscribe to sync completed events: refresh inbox for current account
+        eventBus.subscribe(SyncCompletedEvent.class, ev -> {
+            if (currentAccountId != null && ev.getAccountId() != null && ev.getAccountId().equals(currentAccountId)) {
+                refreshInbox();
+            }
+        });
+
+        // selection listener ...
         inboxTable.getSelectionModel().selectedItemProperty().addListener((obs, oldV, newV) -> {
             if (newV != null && onMessageSelected != null) {
                 onMessageSelected.accept(newV.getId());
             }
         });
 
-        // initial load
-        refreshInbox();
+        // initial load (only if account selected)
+        // don't call refreshInbox() if currentAccountId is null (we will be set by FoldersController interaction)
+        if (currentAccountId != null) refreshInbox();
     }
 
     public void refreshInbox() {
+        if (currentAccountId == null) {
+            // nothing to show — clear
+            Platform.runLater(() -> inboxTable.setItems(FXCollections.observableArrayList()));
+            return;
+        }
+        
         // avoid blocking UI — run in background
         CompletableFuture.supplyAsync(() -> {
             try {
                 // TODO: pick accountId and folder dynamically; using 1L and "INBOX" for MVP
-                List<MessageSummaryDTO> msgs = mailService.listMessages(1L, "INBOX", 0, 50);
+                List<MessageSummaryDTO> msgs = mailService.listMessages(
+                    currentAccountId,
+                    currentFolder,
+                    0, 50
+                );
                 return msgs;
             } catch (Exception e) {
                 // publish notification to UI
@@ -98,5 +123,16 @@ public class InboxController {
         public String getFrom() { return from; }
         public String getSubject() { return subject; }
         public String getDate() { return date; }
+    }
+
+
+    public void setAccount(Long id) {
+        this.currentAccountId = id;
+        refreshInbox();
+    }
+
+    public void setFolder(String f) {
+        this.currentFolder = f;
+        refreshInbox();
     }
 }
