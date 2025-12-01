@@ -140,25 +140,36 @@ public class ServiceLocator {
         registerSingleton(AttachmentRepository.class, () -> attachmentRepository);
         registerSingleton(MessageWrappedKeyRepository.class, () -> messageWrappedKeyRepository);
 
+        // --- CREATE CONTROLLERS WITH DEPENDENCIES ---
+        
+        // Create InboxController
+        ru.study.ui.fx.controller.InboxController inboxCtrl =
+                new ru.study.ui.fx.controller.InboxController(mailService, eventBus);
+        
+        // Create FoldersController
+        ru.study.ui.fx.controller.FoldersController foldersCtrl =
+                new ru.study.ui.fx.controller.FoldersController(accountService, folderService, eventBus);
+        
+        // Create MainWindowController
+        ru.study.ui.fx.controller.MainWindowController mainCtrl =
+                new ru.study.ui.fx.controller.MainWindowController(mailService, eventBus, accountService, masterPasswordService, syncService);
+        
+        // LINK CONTROLLERS TOGETHER
+        mainCtrl.setInboxController(inboxCtrl);
+        mainCtrl.setFoldersController(foldersCtrl);
 
-        // register controllers so FXMLLoader obtains constructor-injected instances
-        registerSingleton(ru.study.ui.fx.controller.MainWindowController.class,
-                () -> new ru.study.ui.fx.controller.MainWindowController(mailService, eventBus, accountService, masterPasswordService, syncService));
+        // Register controllers so FXMLLoader obtains constructor-injected instances
+        registerSingleton(ru.study.ui.fx.controller.MainWindowController.class, () -> mainCtrl);
+        registerSingleton(ru.study.ui.fx.controller.InboxController.class, () -> inboxCtrl);
+        registerSingleton(ru.study.ui.fx.controller.FoldersController.class, () -> foldersCtrl);
 
+        // Other controllers...
         registerSingleton(ru.study.ui.fx.controller.ComposerController.class,
                 () -> new ru.study.ui.fx.controller.ComposerController(mailService, eventBus, accountService));
-
-        registerSingleton(ru.study.ui.fx.controller.InboxController.class,
-                () -> new ru.study.ui.fx.controller.InboxController(mailService, eventBus));
-
+        
         // MessageViewController has no-arg constructor — can be newed directly
         registerSingleton(ru.study.ui.fx.controller.MessageViewController.class,
                 () -> new ru.study.ui.fx.controller.MessageViewController());
-
-        // other UI controllers (optional) — register if you implemented constructor injection:
-        ru.study.ui.fx.controller.FoldersController foldersCtrl =
-                new ru.study.ui.fx.controller.FoldersController(accountService, folderService, eventBus);
-        registerSingleton(ru.study.ui.fx.controller.FoldersController.class, () -> foldersCtrl);
         
         registerSingleton(ru.study.ui.fx.controller.LoginDialogController.class,
                 () -> new ru.study.ui.fx.controller.LoginDialogController());
@@ -170,9 +181,6 @@ public class ServiceLocator {
 
         registerSingleton(ru.study.ui.fx.controller.AccountDialogController.class,
                 () -> new ru.study.ui.fx.controller.AccountDialogController(accountService, eventBus));
-
-
-
 
         log.info("ServiceLocator initialized (MVP)");
     }
@@ -198,7 +206,6 @@ public class ServiceLocator {
         try { eventBus.shutdown(); } catch (Exception ignored) {}
         try { EntityManagerFactoryProvider.close(); } catch (Exception ignored) {}
     }
-
 
     public static ServiceLocator createDefault() {
         return new ServiceLocator();

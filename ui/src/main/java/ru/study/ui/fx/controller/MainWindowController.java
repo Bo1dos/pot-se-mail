@@ -30,6 +30,10 @@ public class MainWindowController {
     private final MasterPasswordService masterPasswordService;
     private final SyncService syncService;
 
+    // Added fields for controller linking
+    private InboxController inboxController;
+    private FoldersController foldersController;
+
     private final Consumer<NotificationEvent> notifHandler = this::onNotification;
     private final Consumer<NewMessageEvent> newMsgHandler = this::onNewMessage;
 
@@ -54,6 +58,29 @@ public class MainWindowController {
         eventBus.subscribe(NewMessageEvent.class, newMsgHandler);
 
         loadAccounts();
+    }
+
+    // ADDED: Setters for controller linking
+    public void setInboxController(InboxController c) {
+        this.inboxController = c;
+        // если аккаунт уже выбран в combobox — сразу применим
+        AccountDTO sel = accountsCombo == null ? null : accountsCombo.getSelectionModel().getSelectedItem();
+        if (sel != null) {
+            inboxController.setAccount(sel.id());
+            // Set default folder
+            inboxController.setFolder("INBOX");
+        }
+    }
+
+    public void setFoldersController(FoldersController f) {
+        this.foldersController = f;
+        // связываем callback папок с inbox
+        f.setOnFolderSelected((accId, folderName) -> {
+            if (inboxController != null) {
+                inboxController.setAccount(accId);
+                inboxController.setFolder(folderName);
+            }
+        });
     }
 
     private void onNotification(NotificationEvent ev) {
@@ -94,6 +121,22 @@ public class MainWindowController {
                     }
                 });
                 if (!list.isEmpty()) accountsCombo.getSelectionModel().select(0);
+                
+                // ADDED: Listener for account selection to update inbox
+                accountsCombo.getSelectionModel().selectedItemProperty().addListener((obs, oldV, newV) -> {
+                    if (newV != null && inboxController != null) {
+                        inboxController.setAccount(newV.id());
+                        // Set default folder when account changes
+                        inboxController.setFolder("INBOX");
+                    }
+                });
+                
+                // If we have accounts and inboxController is set, initialize it
+                if (!list.isEmpty() && inboxController != null) {
+                    AccountDTO first = list.get(0);
+                    inboxController.setAccount(first.id());
+                    inboxController.setFolder("INBOX");
+                }
             } catch (Exception e) {
                 eventBus.publish(new NotificationEvent(NotificationLevel.ERROR, "Failed to load accounts: " + e.getMessage(), e));
             }

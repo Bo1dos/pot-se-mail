@@ -35,9 +35,6 @@ public class InboxController {
     private Long currentAccountId = null;
     private String currentFolder = "INBOX";
 
-
-
-
     public InboxController(MailService mailService, EventBus eventBus) {
         this.mailService = mailService;
         this.eventBus = eventBus;
@@ -57,8 +54,9 @@ public class InboxController {
         // subscribe to new message events
         eventBus.subscribe(NewMessageEvent.class, newMsgHandler);
 
-        // subscribe to sync completed events: refresh inbox for current account
+        // SUBSCRIBE TO SYNC COMPLETED EVENTS - CRITICAL FIX
         eventBus.subscribe(SyncCompletedEvent.class, ev -> {
+            // if sync for current account — refresh inbox
             if (currentAccountId != null && ev.getAccountId() != null && ev.getAccountId().equals(currentAccountId)) {
                 refreshInbox();
             }
@@ -86,7 +84,6 @@ public class InboxController {
         // avoid blocking UI — run in background
         CompletableFuture.supplyAsync(() -> {
             try {
-                // TODO: pick accountId and folder dynamically; using 1L and "INBOX" for MVP
                 List<MessageSummaryDTO> msgs = mailService.listMessages(
                     currentAccountId,
                     currentFolder,
@@ -124,7 +121,6 @@ public class InboxController {
         public String getSubject() { return subject; }
         public String getDate() { return date; }
     }
-
 
     public void setAccount(Long id) {
         this.currentAccountId = id;
