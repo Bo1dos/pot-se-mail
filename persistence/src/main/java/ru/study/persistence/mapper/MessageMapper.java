@@ -9,12 +9,10 @@ import ru.study.core.model.Message;
 import ru.study.persistence.entity.MessageEntity;
 import ru.study.persistence.util.MapperUtils;
 
+import java.util.Collections;
 import java.util.List;
 import java.util.stream.Collectors;
 
-/**
- * MessageMapper — класс для маппинга между MessageEntity, domain Message и DTO.
- */
 public final class MessageMapper {
     private MessageMapper() {}
 
@@ -22,76 +20,62 @@ public final class MessageMapper {
         if (e == null) return null;
 
         List<AttachmentReference> attachments = (e.getAttachments() == null)
-            ? List.of()
-            : e.getAttachments().stream().map(AttachmentMapper::toDomain).collect(Collectors.toList());
+            ? Collections.emptyList()
+            : e.getAttachments().stream()
+                .map(AttachmentMapper::toDomain)
+                .collect(Collectors.toList());
 
-        // Prefer explicit cc column if present; otherwise parse recipients (legacy or JSON)
-        MapperUtils.RecipientLists lists;
-        if (e.getCc() != null && !e.getCc().isBlank()) {
-            List<EmailAddress> to = MapperUtils.csvToEmails(e.getRecipients());
-            List<EmailAddress> cc = MapperUtils.csvToEmails(e.getCc());
-            lists = new MapperUtils.RecipientLists(to, cc);
-        } else {
-            lists = MapperUtils.parseRecipients(e.getRecipients());
-        }
-
+        MapperUtils.RecipientLists lists = parseRecipientsFromEntity(e);
         List<EmailAddress> toList = lists.to;
         List<EmailAddress> ccList = lists.cc;
-        EmailAddress from = new EmailAddress(e.getSender());
-
-        // Note: Message constructor expects (id, accountId, folderName, from, to, cc, subject, snippet, date, seen, encrypted, attachments)
-        boolean seen = false; // MessageEntity doesn't have 'seen' field — service should set it if available
-        boolean encrypted = Boolean.TRUE.equals(e.getIsEncrypted());
+        
+        EmailAddress from = e.getSender() != null ? new EmailAddress(e.getSender()) : null;
 
         return new Message(
             e.getId(),
             e.getAccountId(),
-            e.getFolder() == null ? null : e.getFolder().getServerName(),
+            e.getFolder() != null ? e.getFolder().getServerName() : null,
             from,
             toList,
             ccList,
             e.getSubject(),
-            snippetFromEntity(e),
+            extractSnippet(e),
             MapperUtils.toInstant(e.getSentDate()),
-            seen,
-            encrypted,
+            Boolean.TRUE.equals(e.getIsSeen()),
+            Boolean.TRUE.equals(e.getIsEncrypted()),
             attachments
         );
     }
 
-    private static String snippetFromEntity(MessageEntity e) {
-        if (e.getSubject() != null && !e.getSubject().isBlank()) {
-            return e.getSubject().length() > 120 ? e.getSubject().substring(0, 120) : e.getSubject();
+    private static MapperUtils.RecipientLists parseRecipientsFromEntity(MessageEntity e) {
+        String rec = e.getRecipients();
+        String cc = e.getCc();
+        if ((cc != null && !cc.isBlank()) || (rec != null && !rec.isBlank())) {
+            List<EmailAddress> to = rec == null ? Collections.emptyList() : MapperUtils.csvToEmails(rec);
+            List<EmailAddress> ccList = cc == null ? Collections.emptyList() : MapperUtils.csvToEmails(cc);
+            return new MapperUtils.RecipientLists(to, ccList);
+        } else {
+            return new MapperUtils.RecipientLists(Collections.emptyList(), Collections.emptyList());
         }
-        // fallback: try generate snippet from decrypted body later in service
-        return "";
     }
 
-    public static MessageEntity toEntity(Message domain) {
-        if (domain == null) return null;
-        MessageEntity e = new MessageEntity();
-        e.setId(domain.getId());
-        e.setAccountId(domain.getAccountId());
-        // Folder entity assignment should be handled in service layer (by loading FolderEntity)
-        e.setFolder(null);
-        e.setSubject(domain.getSubject());
-        e.setSender(domain.getFrom().value());
-        e.setRecipients(MapperUtils.emailsToCsv(domain.getTo()));
-        // For cc in entity: convert domain.cc to CSV if domain contains cc (it does)
-        // but domain.getCc() exists in your model, so:
-        e.setCc(domain.getCc() == null ? null : MapperUtils.emailsToCsv(domain.getCc()));
-        e.setSentDate(MapperUtils.toOffsetDateTime(domain.getDate()));
-        e.setIsEncrypted(domain.isEncrypted());
-        return e;
+    private static String extractSnippet(MessageEntity e) {
+        if (e.getSubject() != null && !e.getSubject().isBlank()) {
+            return e.getSubject().length() > 120 
+                ? e.getSubject().substring(0, 120) + "..."
+                : e.getSubject();
+        }
+        return "";
     }
 
     public static MessageSummaryDTO toSummaryDto(Message domain) {
         if (domain == null) return null;
+        
         return new MessageSummaryDTO(
             domain.getId(),
-            domain.getFrom().value(),
-            domain.getSubject(),
-            domain.getSnippet(),
+            domain.getFrom() != null ? domain.getFrom().value() : "Unknown",
+            domain.getSubject() != null ? domain.getSubject() : "",
+            domain.getSnippet() != null ? domain.getSnippet() : "",
             domain.getDate(),
             domain.isSeen(),
             domain.isEncrypted(),
@@ -99,43 +83,34 @@ public final class MessageMapper {
         );
     }
 
-    public static MessageDetailDTO toDetailDto(MessageEntity e) {
-        if (e == null) return null;
+    public static MessageDetailDTO toDetailDto(Message domain, String bodyHtml, String bodyText, Boolean signatureValid) {
+        if (domain == null) return null;
 
-        List<AttachmentMetaDTO> attachments = (e.getAttachments() == null) ? List.of()
-            : e.getAttachments().stream().map(AttachmentMapper::toDto).collect(Collectors.toList());
+        List<AttachmentMetaDTO> attachments = domain.getAttachments().stream()
+            .map(AttachmentMapper::domainToDto)
+            .collect(Collectors.toList());
 
-        // build recipients lists (prefer explicit cc column)
-        MapperUtils.RecipientLists lists;
-        if (e.getCc() != null && !e.getCc().isBlank()) {
-            List<EmailAddress> to = MapperUtils.csvToEmails(e.getRecipients());
-            List<EmailAddress> cc = MapperUtils.csvToEmails(e.getCc());
-            lists = new MapperUtils.RecipientLists(to, cc);
-        } else {
-            lists = MapperUtils.parseRecipients(e.getRecipients());
-        }
+        List<String> to = domain.getTo().stream()
+            .map(EmailAddress::value)
+            .collect(Collectors.toList());
 
-        List<String> toList = lists.to.stream().map(EmailAddress::value).collect(Collectors.toList());
-        List<String> ccList = lists.cc.stream().map(EmailAddress::value).collect(Collectors.toList());
-
-
-        Boolean seen = Boolean.FALSE; // set false by default; service may override if flag exists
-        Boolean encrypted = Boolean.TRUE.equals(e.getIsEncrypted());
-        Boolean signatureValid = null; // crypto service can set later
+        List<String> cc = domain.getCc().stream()
+            .map(EmailAddress::value)
+            .collect(Collectors.toList());
 
         return new MessageDetailDTO(
-            e.getId(),
-            e.getAccountId(),
-            e.getFolder() == null ? null : e.getFolder().getServerName(),
-            e.getSender(),
-            toList,
-            ccList,
-            e.getSubject(),
-            null, // bodyHtml — service fills (decrypt/format)
-            null, // bodyText — service fills
-            MapperUtils.toInstant(e.getSentDate()),
-            seen,
-            encrypted,
+            domain.getId(),
+            domain.getAccountId(),
+            domain.getFolderName(),
+            domain.getFrom() != null ? domain.getFrom().value() : "Unknown",
+            to,
+            cc,
+            domain.getSubject(),
+            bodyHtml,
+            bodyText,
+            domain.getDate(),
+            domain.isSeen(),
+            domain.isEncrypted(),
             attachments,
             signatureValid
         );

@@ -3,47 +3,76 @@ package ru.study.persistence.mapper;
 import ru.study.core.dto.AttachmentMetaDTO;
 import ru.study.core.model.AttachmentReference;
 import ru.study.persistence.entity.AttachmentEntity;
+import ru.study.persistence.entity.MessageEntity;
 
 public final class AttachmentMapper {
     private AttachmentMapper() {}
 
     public static AttachmentReference toDomain(AttachmentEntity e) {
         if (e == null) return null;
+        
+        boolean storedInDb = e.getEncryptedBlob() != null && e.getEncryptedBlob().length > 0;
+        
         return new AttachmentReference(
             e.getId(),
             e.getFilePath(),
-            e.getFilename(),
-            e.getSize() == null ? 0L : e.getSize(),
-            e.getEncryptedBlob() == null || e.getEncryptedBlob().length == 0 ? false : true // crude
+            e.getFilename() != null ? e.getFilename() : "unknown",
+            e.getSize() != null ? e.getSize() : 0L,
+            storedInDb,
+            e.getContentType()
         );
     }
 
-    public static AttachmentEntity toEntity(AttachmentReference d) {
-        if (d == null) return null;
+    public static AttachmentEntity toEntity(AttachmentReference domain) {
+        if (domain == null) return null;
+        
         AttachmentEntity e = new AttachmentEntity();
-        e.setId(d.getId());
-        e.setFilePath(d.getFilePath());
-        e.setFilename(d.getFileName());
-        e.setSize(d.getSize());
-        e.setContentType(null); // TODO: set if available
-        // encryptedBlob/iv handled elsewhere when saving file
+        e.setId(domain.getId());
+        e.setFilePath(domain.getFilePath());
+        e.setFilename(domain.getFileName());
+        e.setSize(domain.getSize());
+        e.setContentType(domain.getContentType());
+        
+        return e;
+    }
+
+    public static AttachmentEntity toEntity(AttachmentReference domain, MessageEntity message) {
+        if (domain == null) return null;
+        AttachmentEntity e = new AttachmentEntity();
+        e.setId(domain.getId());
+        e.setMessage(message);
+        e.setFilePath(domain.getFilePath());
+        e.setFilename(domain.getFileName());
+        e.setSize(domain.getSize());
+        e.setContentType(domain.getContentType());
         return e;
     }
 
     public static AttachmentMetaDTO toDto(AttachmentEntity e) {
         if (e == null) return null;
+        
+        boolean storedInDb = e.getEncryptedBlob() != null && e.getEncryptedBlob().length > 0;
+        
         return new AttachmentMetaDTO(
             e.getId(),
             e.getFilename(),
             e.getContentType(),
-            e.getSize(),
-            e.getEncryptedBlob() == null || e.getEncryptedBlob().length == 0 ? Boolean.FALSE : Boolean.TRUE,
+            e.getSize() != null ? e.getSize() : 0L,
+            storedInDb,
             e.getFilePath()
         );
     }
 
-    public static AttachmentMetaDTO domainToDto(AttachmentReference d) {
-        if (d == null) return null;
-        return new AttachmentMetaDTO(d.getId(), d.getFileName(), null, d.getSize(), d.isStoredInDb(), d.getFilePath());
+    public static AttachmentMetaDTO domainToDto(AttachmentReference domain) {
+        if (domain == null) return null;
+        
+        return new AttachmentMetaDTO(
+            domain.getId(),
+            domain.getFileName(),
+            domain.getContentType(),
+            domain.getSize(),
+            domain.isStoredInDb(),
+            domain.getFilePath()
+        );
     }
 }

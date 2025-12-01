@@ -1,4 +1,4 @@
-package ru.study.core.event.bus;
+package ru.study.core.event;
 
 import ru.study.core.dto.MessageSummaryDTO;
 

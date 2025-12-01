@@ -5,6 +5,7 @@ import ru.study.persistence.repository.api.AttachmentRepository;
 
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.TypedQuery;
+import jakarta.persistence.EntityTransaction;
 import java.util.List;
 import java.util.Optional;
 
@@ -15,11 +16,23 @@ public class AttachmentRepositoryImpl implements AttachmentRepository {
 
     @Override
     public AttachmentEntity save(AttachmentEntity attachment) {
-        if (attachment.getId() == null) {
-            em.persist(attachment);
+        EntityTransaction tx = em.getTransaction();
+        boolean managedTx = false;
+        try {
+            if (!tx.isActive()) { tx.begin(); managedTx = true; }
+
+            if (attachment.getId() == null) {
+                em.persist(attachment);
+                em.flush();
+            } else {
+                attachment = em.merge(attachment);
+            }
+
+            if (managedTx) tx.commit();
             return attachment;
-        } else {
-            return em.merge(attachment);
+        } catch (RuntimeException ex) {
+            if (managedTx && tx.isActive()) tx.rollback();
+            throw ex;
         }
     }
 
@@ -54,8 +67,17 @@ public class AttachmentRepositoryImpl implements AttachmentRepository {
 
     @Override
     public void delete(AttachmentEntity attachment) {
-        if (!em.contains(attachment)) attachment = em.merge(attachment);
-        em.remove(attachment);
+        EntityTransaction tx = em.getTransaction();
+        boolean managedTx = false;
+        try {
+            if (!tx.isActive()) { tx.begin(); managedTx = true; }
+            if (!em.contains(attachment)) attachment = em.merge(attachment);
+            em.remove(attachment);
+            if (managedTx) tx.commit();
+        } catch (RuntimeException ex) {
+            if (managedTx && tx.isActive()) tx.rollback();
+            throw ex;
+        }
     }
 
     @Override

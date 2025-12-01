@@ -11,9 +11,16 @@
       <Button text="Forward"/>
       <Button text="Delete"/>
       <Region fx:id="toolbarSpacer" HBox.hgrow="ALWAYS"/>
+      <Label text="Account:"/>
+      <ComboBox fx:id="accountsCombo" prefWidth="220"/>
+      <Button text="Add account" onAction="#onAddAccount"/>
+      <Button text="Sync" onAction="#onSync"/>
+      <Button text="Logout" onAction="#onLogout"/>
+      <Separator/>
       <Label text="Status: Ready" fx:id="statusLabel"/>
     </ToolBar>
   </top>
+
 
   <left>
     <VBox spacing="6" prefWidth="240" style="-fx-padding:8;">
@@ -25,17 +32,18 @@
   <center>
     <VBox>
       <Label text="Inbox" style="-fx-font-weight:bold; -fx-padding:6 0 6 6;"/>
-      <fx:include source="InboxView.fxml"/>
+      <!-- give include an fx:id so FXMLLoader injects its controller into parent controller -->
+      <fx:include fx:id="inboxInclude" source="InboxView.fxml"/>
     </VBox>
   </center>
 
   <right>
     <TabPane prefWidth="480">
       <Tab text="View">
-        <fx:include source="MessageView.fxml"/>
+        <fx:include fx:id="messageViewInclude" source="MessageView.fxml"/>
       </Tab>
       <Tab text="Compose">
-        <fx:include source="Composer.fxml"/>
+        <fx:include fx:id="composerInclude" source="Composer.fxml"/>
       </Tab>
     </TabPane>
   </right>

@@ -10,9 +10,9 @@
     <version>1.0-SNAPSHOT</version>
   </parent>
 
-  <artifactId>mail-adapter</artifactId>
+  <artifactId>mailadapter</artifactId>
   <packaging>jar</packaging>
-  <name>mail-adapter</name>
+  <name>mailadapter</name>
 
   <dependencies>
     <dependency>

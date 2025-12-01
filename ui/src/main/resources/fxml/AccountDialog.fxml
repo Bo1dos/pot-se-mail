@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?import javafx.scene.control.*?>
+<?import javafx.scene.layout.*?>
+<VBox xmlns="http://javafx.com/javafx/17" xmlns:fx="http://javafx.com/fxml/1"
+      fx:controller="ru.study.ui.fx.controller.AccountDialogController" spacing="8" style="-fx-padding:12;">
+  <Label text="Add Account"/>
+  <GridPane hgap="8" vgap="6">
+    <Label text="Email:" GridPane.rowIndex="0" GridPane.columnIndex="0"/>
+    <TextField fx:id="emailField" GridPane.rowIndex="0" GridPane.columnIndex="1"/>
+    <Label text="IMAP host:" GridPane.rowIndex="1" GridPane.columnIndex="0"/>
+    <TextField fx:id="imapField" GridPane.rowIndex="1" GridPane.columnIndex="1"/>
+    <Label text="IMAP port:" GridPane.rowIndex="2" GridPane.columnIndex="0"/>
+    <TextField fx:id="imapPortField" GridPane.rowIndex="2" GridPane.columnIndex="1"/>
+    <Label text="SMTP host:" GridPane.rowIndex="3" GridPane.columnIndex="0"/>
+    <TextField fx:id="smtpField" GridPane.rowIndex="3" GridPane.columnIndex="1"/>
+    <Label text="SMTP port:" GridPane.rowIndex="4" GridPane.columnIndex="0"/>
+    <TextField fx:id="smtpPortField" GridPane.rowIndex="4" GridPane.columnIndex="1"/>
+    <Label text="Password:" GridPane.rowIndex="5" GridPane.columnIndex="0"/>
+    <PasswordField fx:id="passwordField" GridPane.rowIndex="5" GridPane.columnIndex="1"/>
+    <CheckBox fx:id="useTls" text="Use TLS" GridPane.rowIndex="6" GridPane.columnIndex="1"/>
+  </GridPane>
+  <HBox spacing="8" alignment="CENTER_RIGHT">
+    <Button text="Test" onAction="#onTest"/>
+    <Button text="Save" onAction="#onSave"/>
+    <Button text="Cancel" onAction="#onCancel"/>
+  </HBox>
+  <Label fx:id="infoLabel" style="-fx-text-fill: red;"/>
+</VBox>

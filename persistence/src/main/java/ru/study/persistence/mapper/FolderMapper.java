@@ -9,7 +9,8 @@ public final class FolderMapper {
 
     public static Folder toDomain(FolderEntity e) {
         if (e == null) return null;
-        return new Folder(e.getId(), e.getAccountId(), e.getServerName(), e.getLocalName(), e.getLastSyncUid());
+        String lastSync = e.getLastSyncUid() == null ? null : String.valueOf(e.getLastSyncUid());
+        return new Folder(e.getId(), e.getAccountId(), e.getServerName(), e.getLocalName(), lastSync);
     }
 
     public static FolderEntity toEntity(Folder d) {
@@ -20,9 +21,14 @@ public final class FolderMapper {
         e.setServerName(d.getServerName());
         e.setLocalName(d.getLocalName());
 
-        if (d.getLastSyncUid() == null) e.setLastSyncUid(null);
-        else {
-            e.setLastSyncUid(d.getLastSyncUid());
+        if (d.getLastSyncUid() == null || d.getLastSyncUid().isBlank()) {
+            e.setLastSyncUid(null);
+        } else {
+            try {
+                e.setLastSyncUid(Long.parseLong(d.getLastSyncUid()));
+            } catch (NumberFormatException ex) {
+                e.setLastSyncUid(null);
+            }
         }
         return e;
     }

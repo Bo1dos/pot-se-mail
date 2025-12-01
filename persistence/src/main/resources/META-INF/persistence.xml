@@ -9,19 +9,11 @@
     <class>ru.study.persistence.entity.AccountEntity</class>
     <class>ru.study.persistence.entity.KeyEntity</class>
     <class>ru.study.persistence.entity.FolderEntity</class>
+    <class>ru.study.persistence.entity.MessageWrappedKeyEntity</class>
     <class>ru.study.persistence.entity.MessageEntity</class>
     <class>ru.study.persistence.entity.AttachmentEntity</class>
+    <class>ru.study.persistence.entity.MasterPasswordEntity</class>
 
-    <properties>
-      <!-- Обычно параметры берутся из application.yml; для простоты заводим сюда -->
-      <property name="jakarta.persistence.jdbc.driver" value="org.h2.Driver"/>
-      <property name="jakarta.persistence.jdbc.url" value="jdbc:h2:file:./data/maildb;AUTO_SERVER=TRUE"/>
-      <property name="jakarta.persistence.jdbc.user" value="sa"/>
-      <property name="jakarta.persistence.jdbc.password" value=""/>
-      <property name="hibernate.dialect" value="org.hibernate.dialect.H2Dialect"/>
-      <!-- Так как миграции делает Liquibase, ставим validate -->
-      <property name="hibernate.hbm2ddl.auto" value="validate"/>
-      <property name="hibernate.show_sql" value="false"/>
-    </properties>
+    <!-- Убрать все свойства из persistence.xml -->
   </persistence-unit>
 </persistence>

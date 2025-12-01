@@ -5,6 +5,7 @@ import ru.study.persistence.repository.api.FolderRepository;
 
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.TypedQuery;
+import jakarta.persistence.EntityTransaction;
 import java.util.List;
 import java.util.Optional;
 
@@ -15,11 +16,21 @@ public class FolderRepositoryImpl implements FolderRepository {
 
     @Override
     public FolderEntity save(FolderEntity folder) {
-        if (folder.getId() == null) {
-            em.persist(folder);
+        EntityTransaction tx = em.getTransaction();
+        boolean managedTx = false;
+        try {
+            if (!tx.isActive()) { tx.begin(); managedTx = true; }
+            if (folder.getId() == null) {
+                em.persist(folder);
+                em.flush();
+            } else {
+                folder = em.merge(folder);
+            }
+            if (managedTx) tx.commit();
             return folder;
-        } else {
-            return em.merge(folder);
+        } catch (RuntimeException ex) {
+            if (managedTx && tx.isActive()) tx.rollback();
+            throw ex;
         }
     }
 
@@ -47,7 +58,7 @@ public class FolderRepositoryImpl implements FolderRepository {
     @Override
     public Optional<FolderEntity> findByAccountAndServerName(Long accountId, String serverName) {
         TypedQuery<FolderEntity> q = em.createQuery(
-            "SELECT f FROM FolderEntity f WHERE f.account.id = :aid AND f.serverName = :sname", FolderEntity.class);
+            "SELECT f FROM FolderEntity f WHERE f.accountId = :aid AND f.serverName = :sname", FolderEntity.class);
         q.setParameter("aid", accountId);
         q.setParameter("sname", serverName);
         return q.getResultStream().findFirst();
@@ -56,7 +67,7 @@ public class FolderRepositoryImpl implements FolderRepository {
     @Override
     public List<FolderEntity> findByAccountId(Long accountId) {
         TypedQuery<FolderEntity> q = em.createQuery(
-            "SELECT f FROM FolderEntity f WHERE f.account.id = :aid ORDER BY f.serverName", FolderEntity.class);
+            "SELECT f FROM FolderEntity f WHERE f.accountId = :aid ORDER BY f.serverName", FolderEntity.class);
         q.setParameter("aid", accountId);
         return q.getResultList();
     }
@@ -64,7 +75,7 @@ public class FolderRepositoryImpl implements FolderRepository {
     @Override
     public List<FolderEntity> findByAccountId(Long accountId, int limit, int offset) {
         TypedQuery<FolderEntity> q = em.createQuery(
-            "SELECT f FROM FolderEntity f WHERE f.account.id = :aid ORDER BY f.serverName", FolderEntity.class);
+            "SELECT f FROM FolderEntity f WHERE f.accountId = :aid ORDER BY f.serverName", FolderEntity.class);
         q.setParameter("aid", accountId);
         q.setFirstResult(offset);
         q.setMaxResults(limit);
@@ -73,8 +84,17 @@ public class FolderRepositoryImpl implements FolderRepository {
 
     @Override
     public void delete(FolderEntity folder) {
-        if (!em.contains(folder)) folder = em.merge(folder);
-        em.remove(folder);
+        EntityTransaction tx = em.getTransaction();
+        boolean managedTx = false;
+        try {
+            if (!tx.isActive()) { tx.begin(); managedTx = true; }
+            if (!em.contains(folder)) folder = em.merge(folder);
+            em.remove(folder);
+            if (managedTx) tx.commit();
+        } catch (RuntimeException ex) {
+            if (managedTx && tx.isActive()) tx.rollback();
+            throw ex;
+        }
     }
 
     @Override

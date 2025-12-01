@@ -6,6 +6,7 @@ import ru.study.core.model.EmailAddress;
 import ru.study.persistence.entity.AccountEntity;
 import ru.study.persistence.util.MapperUtils;
 
+// TODO: рефактор, под core и persistence
 public final class AccountMapper {
     private AccountMapper() {}
 
@@ -56,15 +57,20 @@ public final class AccountMapper {
 
     public static Account fromDto(AccountDTO dto) {
         if (dto == null) return null;
+        
+        Integer imapPort = dto.imapPort();
+        Integer smtpPort = dto.smtpPort();
+        Boolean useTls = dto.useTls();
+
         return new Account(
             dto.id(),
             new EmailAddress(dto.email()),
             dto.displayName(),
             dto.imapServer(),
-            dto.imapPort() == null ? 0 : dto.imapPort(),
+            imapPort == null ? 0 : imapPort,
             dto.smtpServer(),
-            dto.smtpPort() == null ? 0 : dto.smtpPort(),
-            dto.useTls() == null ? false : dto.useTls(),
+            smtpPort == null ? 0 : smtpPort,
+            Boolean.TRUE.equals(useTls),
             null
         );
     }

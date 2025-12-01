@@ -27,6 +27,12 @@
       <artifactId>slf4j-api</artifactId>
     </dependency>
 
+    <!-- Jakarta Mail API for crypto -->
+    <dependency>
+      <groupId>com.sun.mail</groupId>
+      <artifactId>jakarta.mail</artifactId>
+    </dependency>
+
     <!-- (Optional) -->
     <!--
     <dependency>

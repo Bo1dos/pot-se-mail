@@ -1,0 +1,16 @@
+databaseChangeLog:
+  - changeSet:
+      id: 003-add-usadd-and-isdelete-column
+      author: Bo1dos
+      changes:
+        - addColumn:
+            tableName: messages
+            columns:
+              - column:
+                  name: is_seen
+                  type: BOOLEAN
+                  defaultValueBoolean: false
+              - column:
+                  name: is_deleted
+                  type: BOOLEAN
+                  defaultValueBoolean: false

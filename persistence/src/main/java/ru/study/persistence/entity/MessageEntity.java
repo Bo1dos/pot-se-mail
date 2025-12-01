@@ -39,11 +39,11 @@ public class MessageEntity {
 
     @Lob
     @Column(name = "recipients")
-    private String recipients; // comma-separated or JSON
+    private String recipients;
 
     @Lob
     @Column(name = "cc")
-    private String cc; // comma-separated or JSON (preferred)
+    private String cc;
 
     @Column(name = "sent_date")
     private OffsetDateTime sentDate;
@@ -51,11 +51,6 @@ public class MessageEntity {
     @Column(name = "is_encrypted")
     @Builder.Default
     private Boolean isEncrypted = Boolean.FALSE;
-
-    @Lob
-    @Basic(fetch = FetchType.LAZY)
-    @Column(name = "wrapped_key_blob")
-    private byte[] wrappedKeyBlob;
 
     @Lob
     @Basic(fetch = FetchType.LAZY)
@@ -73,8 +68,18 @@ public class MessageEntity {
     @Column(name = "created_at")
     private OffsetDateTime createdAt;
 
+    @Column(name = "is_seen")
+    private Boolean isSeen;
+    
+    @Column(name = "is_deleted")
+    private Boolean isDeleted;
+
     @OneToMany(mappedBy = "message", cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.LAZY)
     private List<AttachmentEntity> attachments;
+
+    // Новое поле для связи с wrapped keys
+    @OneToMany(mappedBy = "message", cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.LAZY)
+    private List<MessageWrappedKeyEntity> wrappedKeys;
 
     @PrePersist
     protected void onCreate() {

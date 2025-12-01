@@ -29,6 +29,11 @@
       <artifactId>persistence</artifactId>
       <version>${project.parent.version}</version>
     </dependency>
+    <dependency>
+      <groupId>ru.study</groupId>
+      <artifactId>mailadapter</artifactId>
+      <version>${project.parent.version}</version>
+    </dependency>
 
     <dependency>
     <groupId>org.openjfx</groupId>

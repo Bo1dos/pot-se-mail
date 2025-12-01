@@ -5,6 +5,7 @@ import ru.study.persistence.repository.api.AccountRepository;
 
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.TypedQuery;
+import jakarta.persistence.EntityTransaction;
 import java.util.List;
 import java.util.Optional;
 
@@ -15,11 +16,23 @@ public class AccountRepositoryImpl implements AccountRepository {
 
     @Override
     public AccountEntity save(AccountEntity account) {
-        if (account.getId() == null) {
-            em.persist(account);
+        EntityTransaction tx = em.getTransaction();
+        boolean managedTx = false;
+        try {
+            if (!tx.isActive()) { tx.begin(); managedTx = true; }
+
+            if (account.getId() == null) {
+                em.persist(account);
+                em.flush(); // ensure ID generated for IDENTITY
+            } else {
+                account = em.merge(account);
+            }
+
+            if (managedTx) tx.commit();
             return account;
-        } else {
-            return em.merge(account);
+        } catch (RuntimeException ex) {
+            if (managedTx && tx.isActive()) tx.rollback();
+            throw ex;
         }
     }
 
@@ -62,8 +75,17 @@ public class AccountRepositoryImpl implements AccountRepository {
 
     @Override
     public void delete(AccountEntity account) {
-        if (!em.contains(account)) account = em.merge(account);
-        em.remove(account);
+        EntityTransaction tx = em.getTransaction();
+        boolean managedTx = false;
+        try {
+            if (!tx.isActive()) { tx.begin(); managedTx = true; }
+            if (!em.contains(account)) account = em.merge(account);
+            em.remove(account);
+            if (managedTx) tx.commit();
+        } catch (RuntimeException ex) {
+            if (managedTx && tx.isActive()) tx.rollback();
+            throw ex;
+        }
     }
 
     @Override

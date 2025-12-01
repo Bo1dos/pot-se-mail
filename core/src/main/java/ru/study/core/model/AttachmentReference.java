@@ -17,8 +17,9 @@ public final class AttachmentReference {
     private final String fileName;
     private final long size;
     private final boolean storedInDb;
+    private final String contentType;
 
-    public AttachmentReference(Long id, String filePath, String fileName, long size, boolean storedInDb) {
+    public AttachmentReference(Long id, String filePath, String fileName, long size, boolean storedInDb, String contentType) {
         if (filePath == null && id == null) {
             throw new IllegalArgumentException("Either filePath or id must be provided");
         }
@@ -27,5 +28,6 @@ public final class AttachmentReference {
         this.fileName = fileName;
         this.size = size;
         this.storedInDb = storedInDb;
+        this.contentType = contentType;
     }
 }

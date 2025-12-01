@@ -3,14 +3,9 @@ package ru.study.crypto.util;
 import ru.study.crypto.model.EncryptedBlob;
 import ru.study.core.exception.CryptoException;
 
+import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 
-/**
- * Простая сериализация EncryptedBlob в компактную строку:
- * algorithm|base64(iv)|base64(ciphertext)
- *
- * Подходит для хранения в TEXT/BLOB. Простая, детерминистичная.
- */
 public final class EncryptedBlobCodec {
     private static final String SEP = "|";
 
@@ -40,5 +35,16 @@ public final class EncryptedBlobCodec {
         } catch (Exception e) {
             throw new CryptoException("Failed to decode EncryptedBlob", e);
         }
+    }
+
+    // --- new helpers for byte[] (BLOB storage) ---
+    public static byte[] encodeToBytes(EncryptedBlob blob) {
+        String s = encode(blob);
+        return s == null ? null : s.getBytes(StandardCharsets.UTF_8);
+    }
+
+    public static EncryptedBlob decodeFromBytes(byte[] data) {
+        if (data == null) return null;
+        return decode(new String(data, StandardCharsets.UTF_8));
     }
 }

@@ -5,6 +5,7 @@ import ru.study.persistence.repository.api.MessageRepository;
 
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.TypedQuery;
+import jakarta.persistence.EntityTransaction;
 import java.util.List;
 import java.util.Optional;
 
@@ -15,11 +16,21 @@ public class MessageRepositoryImpl implements MessageRepository {
 
     @Override
     public MessageEntity save(MessageEntity m) {
-        if (m.getId() == null) {
-            em.persist(m);
+        EntityTransaction tx = em.getTransaction();
+        boolean managedTx = false;
+        try {
+            if (!tx.isActive()) { tx.begin(); managedTx = true; }
+            if (m.getId() == null) {
+                em.persist(m);
+                em.flush();
+            } else {
+                m = em.merge(m);
+            }
+            if (managedTx) tx.commit();
             return m;
-        } else {
-            return em.merge(m);
+        } catch (RuntimeException ex) {
+            if (managedTx && tx.isActive()) tx.rollback();
+            throw ex;
         }
     }
 
@@ -47,7 +58,7 @@ public class MessageRepositoryImpl implements MessageRepository {
     @Override
     public Optional<MessageEntity> findByAccountAndServerUid(Long accountId, String serverUid) {
         TypedQuery<MessageEntity> q = em.createQuery(
-            "SELECT m FROM MessageEntity m WHERE m.account.id = :aid AND m.serverUid = :uid", MessageEntity.class);
+            "SELECT m FROM MessageEntity m WHERE m.accountId = :aid AND m.serverUid = :uid", MessageEntity.class);
         q.setParameter("aid", accountId);
         q.setParameter("uid", serverUid);
         return q.getResultStream().findFirst();
@@ -67,7 +78,7 @@ public class MessageRepositoryImpl implements MessageRepository {
     @Override
     public List<MessageEntity> findByAccount(Long accountId, int limit, int offset) {
         TypedQuery<MessageEntity> q = em.createQuery(
-            "SELECT m FROM MessageEntity m WHERE m.account.id = :aid ORDER BY m.sentDate DESC",
+            "SELECT m FROM MessageEntity m WHERE m.accountId = :aid ORDER BY m.sentDate DESC",
             MessageEntity.class);
         q.setParameter("aid", accountId);
         q.setFirstResult(offset);
@@ -86,15 +97,24 @@ public class MessageRepositoryImpl implements MessageRepository {
     @Override
     public long countByAccount(Long accountId) {
         TypedQuery<Long> q = em.createQuery(
-            "SELECT COUNT(m) FROM MessageEntity m WHERE m.account.id = :aid", Long.class);
+            "SELECT COUNT(m) FROM MessageEntity m WHERE m.accountId = :aid", Long.class);
         q.setParameter("aid", accountId);
         return q.getSingleResult();
     }
 
     @Override
     public void delete(MessageEntity message) {
-        if (!em.contains(message)) message = em.merge(message);
-        em.remove(message);
+        EntityTransaction tx = em.getTransaction();
+        boolean managedTx = false;
+        try {
+            if (!tx.isActive()) { tx.begin(); managedTx = true; }
+            if (!em.contains(message)) message = em.merge(message);
+            em.remove(message);
+            if (managedTx) tx.commit();
+        } catch (RuntimeException ex) {
+            if (managedTx && tx.isActive()) tx.rollback();
+            throw ex;
+        }
     }
 
     @Override

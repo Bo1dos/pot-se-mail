@@ -15,9 +15,9 @@ public final class Folder {
     private final Long accountId;
     private final String serverName;
     private final String localName;
-    private final Long lastSyncUid;
+    private final String lastSyncUid;
 
-    public Folder(Long id, Long accountId, String serverName, String localName, Long lastSyncUid) {
+    public Folder(Long id, Long accountId, String serverName, String localName, String lastSyncUid) {
         this.id = id;
         this.accountId = accountId;
         this.serverName = serverName;

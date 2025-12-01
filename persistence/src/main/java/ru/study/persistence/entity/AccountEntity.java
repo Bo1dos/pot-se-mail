@@ -12,7 +12,7 @@ import java.time.OffsetDateTime;
 @NoArgsConstructor
 @AllArgsConstructor
 @Builder
-@ToString(exclude = {"credBlob", "credIv", "credSalt", "verifierHash", "verifierSalt"})
+@ToString(exclude = {"credBlob", "credIv", "credSalt"})
 @EqualsAndHashCode(onlyExplicitlyIncluded = true)
 public class AccountEntity {
     
@@ -53,11 +53,6 @@ public class AccountEntity {
     @Column(name = "cred_salt", length = 64)
     private byte[] credSalt;
 
-    @Column(name = "verifier_hash", length = 256)
-    private byte[] verifierHash;
-
-    @Column(name = "verifier_salt", length = 64)
-    private byte[] verifierSalt;
 
     @Column(name = "created_at")
     private OffsetDateTime createdAt;

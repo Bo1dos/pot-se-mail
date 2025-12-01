@@ -66,4 +66,14 @@ public final class PemUtils {
         }
         return sb.toString();
     }
+
+    public static PrivateKey privateKeyFromPkcs8(byte[] pkcs8) {
+        try {
+            PKCS8EncodedKeySpec spec = new PKCS8EncodedKeySpec(pkcs8);
+            KeyFactory kf = KeyFactory.getInstance("RSA");
+            return kf.generatePrivate(spec);
+        } catch (Exception e) {
+            throw new ru.study.core.exception.CryptoException("Failed to parse PKCS8 private key", e);
+        }
+    }
 }
