@@ -30,4 +30,7 @@ public interface MailService {
     void deleteMessage(Long accountId, Long messageId) throws CoreException;
 
     List<MessageSummaryDTO> listMessages(Long accountId, String folder, int page, int size) throws CoreException;
+
+    void markMessageSeen(Long accountId, Long messageId) throws CoreException;
+
 }

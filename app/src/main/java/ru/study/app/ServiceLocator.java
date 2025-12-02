@@ -150,11 +150,14 @@ public class ServiceLocator {
         
         // Message view controller (no-arg)
         ru.study.ui.fx.controller.MessageViewController messageViewCtrl =
-                new ru.study.ui.fx.controller.MessageViewController();
+                new ru.study.ui.fx.controller.MessageViewController(attachmentService, eventBus);
         
         // Main window controller
         ru.study.ui.fx.controller.MainWindowController mainCtrl =
                 new ru.study.ui.fx.controller.MainWindowController(mailService, eventBus, accountService, masterPasswordService, syncService);
+        // TODO: убрать, отладка
+        System.out.println("ServiceLocator created messageViewCtrl instance=" + System.identityHashCode(messageViewCtrl));
+
         
         // связываем контроллеры между собой
         mainCtrl.setInboxController(inboxCtrl);

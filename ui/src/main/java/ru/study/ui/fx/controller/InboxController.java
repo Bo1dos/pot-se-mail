@@ -2,38 +2,38 @@ package ru.study.ui.fx.controller;
 
 import javafx.application.Platform;
 import javafx.collections.FXCollections;
+import javafx.collections.ObservableList;
 import javafx.fxml.FXML;
-import javafx.scene.control.TableView;
-import javafx.scene.control.TableColumn;
-import javafx.scene.control.cell.PropertyValueFactory;
+import javafx.scene.control.*;
+import javafx.scene.input.MouseButton;
 import ru.study.core.dto.MessageSummaryDTO;
-import ru.study.core.event.NewMessageEvent;
-import ru.study.core.event.SyncCompletedEvent;
+import ru.study.core.event.NotificationEvent;
+import ru.study.core.event.NotificationLevel;
 import ru.study.core.event.bus.EventBus;
 import ru.study.service.api.MailService;
 
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.List;
-import java.util.concurrent.CompletableFuture;
 import java.util.function.Consumer;
 
-/**
- * InboxController — fills TableView from MailService.listMessages.
- * Simple MVP: uses accountId = 1L by default (adjust later).
- */
 public class InboxController {
 
-    @FXML public TableView<EmailRow> inboxTable;
+    @FXML public TableView<MessageSummaryDTO> inboxTable;
 
     private final MailService mailService;
     private final EventBus eventBus;
 
-    private final Consumer<NewMessageEvent> newMsgHandler = ev -> refreshInbox();
-
-    // callback to notify parent (MainWindowController) when a message row is selected
-    private Consumer<Long> onMessageSelected = id -> {};
-
-    private Long currentAccountId = null;
+    private Long currentAccountId;
     private String currentFolder = "INBOX";
+    private final ObservableList<MessageSummaryDTO> items = FXCollections.observableArrayList();
+    private Consumer<Long> onMessageSelected;
+
+    // page/size defaults for listMessages call
+    private static final int DEFAULT_PAGE = 0;
+    private static final int DEFAULT_SIZE = 200;
+
+    private static final DateTimeFormatter DATE_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
 
     public InboxController(MailService mailService, EventBus eventBus) {
         this.mailService = mailService;
@@ -42,93 +42,169 @@ public class InboxController {
 
     @FXML
     public void initialize() {
-        TableColumn<EmailRow, String> fromCol = new TableColumn<>("From");
-        fromCol.setCellValueFactory(new PropertyValueFactory<>("from"));
-        TableColumn<EmailRow, String> subjCol = new TableColumn<>("Subject");
-        subjCol.setCellValueFactory(new PropertyValueFactory<>("subject"));
-        TableColumn<EmailRow, String> dateCol = new TableColumn<>("Date");
-        dateCol.setCellValueFactory(new PropertyValueFactory<>("date"));
+        // Если колонки из FXML уже есть — назначаем cellValueFactory для них
+        if (!inboxTable.getColumns().isEmpty()) {
+            try {
+                // Column 0 -> From
+                TableColumn<?, ?> c0 = inboxTable.getColumns().get(0);
+                ((TableColumn<MessageSummaryDTO, String>) c0).setCellValueFactory(cd ->
+                        new javafx.beans.property.SimpleStringProperty(cd.getValue() == null ? "" : safeString(cd.getValue().from()))
+                );
 
-        inboxTable.getColumns().setAll(fromCol, subjCol, dateCol);
+                // Column 1 -> Subject
+                TableColumn<?, ?> c1 = inboxTable.getColumns().get(1);
+                ((TableColumn<MessageSummaryDTO, String>) c1).setCellValueFactory(cd ->
+                        new javafx.beans.property.SimpleStringProperty(cd.getValue() == null ? "" : safeString(cd.getValue().subject()))
+                );
 
-        // subscribe to new message events
-        eventBus.subscribe(NewMessageEvent.class, newMsgHandler);
+                // Column 2 -> Date
+                TableColumn<?, ?> c2 = inboxTable.getColumns().get(2);
+                ((TableColumn<MessageSummaryDTO, String>) c2).setCellValueFactory(cd -> {
+                    MessageSummaryDTO v = cd.getValue();
+                    if (v == null || v.date() == null) return new javafx.beans.property.SimpleStringProperty("");
+                    try {
+                        String s = DATE_FMT.format(v.date().atZone(ZoneId.systemDefault()).toLocalDateTime());
+                        return new javafx.beans.property.SimpleStringProperty(s);
+                    } catch (Exception ex) {
+                        return new javafx.beans.property.SimpleStringProperty(v.date().toString());
+                    }
+                });
+            } catch (Exception e) {
+                // на всякий: если структура колонок нестандартная — создадим наши колонки ниже
+                inboxTable.getColumns().clear();
+            }
+        }
 
-        // SUBSCRIBE TO SYNC COMPLETED EVENTS - CRITICAL FIX
-        eventBus.subscribe(SyncCompletedEvent.class, ev -> {
-            // if sync for current account — refresh inbox
-            if (currentAccountId != null && ev.getAccountId() != null && ev.getAccountId().equals(currentAccountId)) {
-                refreshInbox();
+        // если после попытки выше колонки пусты — создаём их программно
+        if (inboxTable.getColumns().isEmpty()) {
+            TableColumn<MessageSummaryDTO, String> fromCol = new TableColumn<>("From");
+            fromCol.setPrefWidth(140);
+            fromCol.setCellValueFactory(cd -> new javafx.beans.property.SimpleStringProperty(cd.getValue() == null ? "" : safeString(cd.getValue().from())));
+
+            TableColumn<MessageSummaryDTO, String> subjCol = new TableColumn<>("Subject");
+            subjCol.setPrefWidth(240);
+            subjCol.setCellValueFactory(cd -> new javafx.beans.property.SimpleStringProperty(cd.getValue() == null ? "" : safeString(cd.getValue().subject())));
+
+            TableColumn<MessageSummaryDTO, String> dateCol = new TableColumn<>("Date");
+            dateCol.setPrefWidth(120);
+            dateCol.setCellValueFactory(cd -> {
+                if (cd.getValue() == null || cd.getValue().date() == null) return new javafx.beans.property.SimpleStringProperty("");
+                try {
+                    String s = DATE_FMT.format(cd.getValue().date().atZone(ZoneId.systemDefault()).toLocalDateTime());
+                    return new javafx.beans.property.SimpleStringProperty(s);
+                } catch (Exception e) {
+                    return new javafx.beans.property.SimpleStringProperty(cd.getValue().date().toString());
+                }
+            });
+
+            inboxTable.getColumns().addAll(fromCol, subjCol, dateCol);
+        }
+
+        inboxTable.setItems(items);
+
+        // style строк: выделяем непрочитанные (seen==false) жирным шрифтом
+        inboxTable.setRowFactory(tv -> new TableRow<>() {
+            @Override
+            protected void updateItem(MessageSummaryDTO item, boolean empty) {
+                super.updateItem(item, empty);
+                if (empty || item == null) {
+                    setStyle("");
+                } else {
+                    if (!item.seen()) {
+                        // unread — bold
+                        setStyle("-fx-font-weight: bold;");
+                    } else {
+                        setStyle("");
+                    }
+                }
             }
         });
 
-        // selection listener ...
+        // selection -> callback with id
         inboxTable.getSelectionModel().selectedItemProperty().addListener((obs, oldV, newV) -> {
-            if (newV != null && onMessageSelected != null) {
-                onMessageSelected.accept(newV.getId());
+            if (onMessageSelected != null) {
+                onMessageSelected.accept(newV == null ? null : newV.id());
             }
         });
 
-        // initial load (only if account selected)
-        // don't call refreshInbox() if currentAccountId is null (we will be set by FoldersController interaction)
-        if (currentAccountId != null) refreshInbox();
+        // double click -> also trigger selection callback (UX)
+        inboxTable.setOnMouseClicked(ev -> {
+            if (ev.getButton() == MouseButton.PRIMARY && ev.getClickCount() == 2) {
+                MessageSummaryDTO sel = inboxTable.getSelectionModel().getSelectedItem();
+                if (sel != null && onMessageSelected != null) onMessageSelected.accept(sel.id());
+            }
+        });
     }
 
-    public void refreshInbox() {
+    // --- external API used by MainWindowController ---
+    public void setOnMessageSelected(Consumer<Long> cb) {
+        this.onMessageSelected = cb;
+    }
+
+    public Long getSelectedMessageId() {
+        MessageSummaryDTO sel = inboxTable.getSelectionModel().getSelectedItem();
+        return sel == null ? null : sel.id();
+    }
+
+    public void setAccount(Long accountId) {
+        this.currentAccountId = accountId;
+        refresh();
+    }
+
+    public void setFolder(String folder) {
+        this.currentFolder = folder == null ? "INBOX" : folder;
+        refresh();
+    }
+
+    public void refresh() {
         if (currentAccountId == null) {
-            // nothing to show — clear
-            Platform.runLater(() -> inboxTable.setItems(FXCollections.observableArrayList()));
+            items.clear();
             return;
         }
-        
-        // avoid blocking UI — run in background
-        CompletableFuture.supplyAsync(() -> {
+
+        // background load
+        java.util.concurrent.CompletableFuture.supplyAsync(() -> {
             try {
-                List<MessageSummaryDTO> msgs = mailService.listMessages(
-                    currentAccountId,
-                    currentFolder,
-                    0, 50
-                );
-                return msgs;
-            } catch (Exception e) {
-                // publish notification to UI
-                eventBus.publish(new ru.study.core.event.NotificationEvent(ru.study.core.event.NotificationLevel.ERROR, "Failed to load inbox: " + e.getMessage(), e));
-                return List.<MessageSummaryDTO>of();
+                List<MessageSummaryDTO> list = mailService.listMessages(currentAccountId, currentFolder, DEFAULT_PAGE, DEFAULT_SIZE);
+                return list;
+            } catch (Exception ex) {
+                throw new RuntimeException(ex);
             }
         }).thenAccept(list -> {
             Platform.runLater(() -> {
-                var rows = list.stream()
-                        .map(m -> new EmailRow(m.id(), m.from(), m.subject(), m.date() == null ? "" : m.date().toString()))
-                        .toList();
-                inboxTable.setItems(FXCollections.observableArrayList(rows));
+                items.setAll(list == null ? List.of() : list);
             });
+        }).exceptionally(ex -> {
+            Throwable cause = ex instanceof java.util.concurrent.CompletionException ? ex.getCause() : ex;
+            eventBus.publish(new NotificationEvent(NotificationLevel.ERROR, "Failed to load messages: " + (cause == null ? ex.getMessage() : cause.getMessage()), cause));
+            return null;
         });
     }
 
-    // setter for parent to receive selection notifications
-    public void setOnMessageSelected(Consumer<Long> handler) {
-        if (handler != null) this.onMessageSelected = handler;
+    /**
+     * Locally mark message as seen (updates the table row style by replacing the record).
+     * Does not automatically sync to server — MainWindowController may call mailService.markMessageSeen if available.
+     */
+    public void markAsSeen(Long messageId) {
+        if (messageId == null) return;
+        Platform.runLater(() -> {
+            for (int i = 0; i < items.size(); i++) {
+                MessageSummaryDTO s = items.get(i);
+                if (s != null && messageId.equals(s.id()) && !s.seen()) {
+                    // replace with new record where seen=true (record constructor order)
+                    MessageSummaryDTO replaced = new MessageSummaryDTO(
+                            s.id(), s.from(), s.subject(), s.snippet(), s.date(), true, s.encrypted(), s.hasAttachments()
+                    );
+                    items.set(i, replaced);
+                    // ensure row style applied (force refresh)
+                    inboxTable.refresh();
+                    break;
+                }
+            }
+        });
     }
 
-    public static class EmailRow {
-        private final Long id;
-        private final String from;
-        private final String subject;
-        private final String date;
-        public EmailRow(Long id, String from, String subject, String date) { this.id = id; this.from = from; this.subject = subject; this.date = date; }
-        public Long getId() { return id; }
-        public String getFrom() { return from; }
-        public String getSubject() { return subject; }
-        public String getDate() { return date; }
-    }
-
-    public void setAccount(Long id) {
-        this.currentAccountId = id;
-        refreshInbox();
-    }
-
-    public void setFolder(String f) {
-        this.currentFolder = f;
-        refreshInbox();
+    private static String safeString(String s) {
+        return s == null ? "" : s;
     }
 }

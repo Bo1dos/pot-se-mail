@@ -105,8 +105,37 @@ public class MainWindowController {
                 Platform.runLater(() -> {
                     try {
                         if (detail == null) {
+                            // TODO: убрать, дебаг
+                            System.out.println("[DEBUG] MainWindow: detail==null, calling showHtml(no content) for messageId=" + messageId);
+
                             messageViewController.showHtml("<p>(no content)</p>");
                             eventBus.publish(new NotificationEvent(NotificationLevel.INFO, "Message not found", null));
+                            
+                            // mark locally in inbox UI
+                            if (inboxController != null) {
+                                inboxController.markAsSeen(messageId);
+                            }
+
+                            // Try to notify server if MailService exposes markMessageSeen(accountId, messageId).
+                            // We use reflection so this code compiles even if the method is not present.
+                            try {
+                                java.lang.reflect.Method markMethod = mailService.getClass().getMethod("markMessageSeen", Long.class, Long.class);
+                                if (markMethod != null) {
+                                    java.util.concurrent.CompletableFuture.runAsync(() -> {
+                                        try {
+                                            markMethod.invoke(mailService, accountId, messageId);
+                                        } catch (Exception e) {
+                                            // log/publish but don't break UI
+                                            eventBus.publish(new NotificationEvent(NotificationLevel.INFO, "Failed to mark seen on server: " + e.getMessage(), e));
+                                        }
+                                    });
+                                }
+                            } catch (NoSuchMethodException ignored) {
+                                // method not available — ok
+                            } catch (Exception e) {
+                                eventBus.publish(new NotificationEvent(NotificationLevel.INFO, "Failed to call markMessageSeen: " + e.getMessage(), e));
+                            }
+
                             return;
                         }
 
@@ -185,9 +214,15 @@ public class MainWindowController {
 
                             // Показываем fallback в простой обёртке
                             String wrapped = "<html><body><pre>" + escapeHtml(fallback) + "</pre></body></html>";
+                            // TODO: убрать, дебаг
+                            System.out.println("[DEBUG] MainWindow: showing fallback content, len=" + wrapped.length());
+
                             messageViewController.showHtml(wrapped);
                             eventBus.publish(new NotificationEvent(NotificationLevel.INFO, "Shown fallback content (no HTML). length=" + wrapped.length(), null));
                         } else {
+                            // TODO: убрать, дебаг
+                            System.out.println("[DEBUG] MainWindow: showing HTML content, len=" + html.length());
+                            
                             // Если нашли HTML — покажем напрямую
                             messageViewController.showHtml(html);
                             eventBus.publish(new NotificationEvent(NotificationLevel.INFO, "Shown HTML content, len=" + (html == null ? 0 : html.length()), null));
@@ -218,6 +253,8 @@ public class MainWindowController {
     }
 
     public void setMessageViewController(MessageViewController mvc) {
+        // TODO: убрать отладку
+        System.out.println("MainWindowController.setMessageViewController: mvc=" + System.identityHashCode(mvc));
         this.messageViewController = mvc;
     }
 
@@ -354,5 +391,66 @@ public class MainWindowController {
     private static String escapeHtml(String s) {
         if (s == null) return "";
         return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
+    }
+
+
+    @FXML
+    public void onReply() {
+        Long selMsgId = inboxController == null ? null : inboxController.getSelectedMessageId();
+        AccountDTO selected = accountsCombo.getSelectionModel().getSelectedItem();
+        if (selected == null || selMsgId == null) {
+            eventBus.publish(new NotificationEvent(NotificationLevel.ERROR, "No message selected to reply", null));
+            return;
+        }
+        // load original message in background then publish ComposeMessageEvent
+        java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+            try {
+                return mailService.getMessage(selected.id(), selMsgId);
+            } catch (Exception ex) {
+                throw new RuntimeException(ex);
+            }
+        }).thenAccept(detail -> {
+            eventBus.publish(new ru.study.core.event.ComposeMessageEvent(selected.id(), detail));
+        }).exceptionally(ex -> {
+            Throwable c = ex instanceof java.util.concurrent.CompletionException ? ex.getCause() : ex;
+            eventBus.publish(new NotificationEvent(NotificationLevel.ERROR, "Failed to load message for reply: " + c.getMessage(), c));
+            return null;
+        });
+    }
+
+    @FXML
+    public void onDelete() {
+        Long selMsgId = inboxController == null ? null : inboxController.getSelectedMessageId();
+        AccountDTO selected = accountsCombo.getSelectionModel().getSelectedItem();
+        if (selected == null || selMsgId == null) {
+            eventBus.publish(new NotificationEvent(NotificationLevel.ERROR, "No message selected to delete", null));
+            return;
+        }
+        // confirm
+        Platform.runLater(() -> {
+            javafx.scene.control.Alert a = new javafx.scene.control.Alert(javafx.scene.control.Alert.AlertType.CONFIRMATION, "Delete message?", javafx.scene.control.ButtonType.YES, javafx.scene.control.ButtonType.NO);
+            a.initOwner(statusLabel.getScene().getWindow());
+            a.showAndWait().ifPresent(btn -> {
+                if (btn == javafx.scene.control.ButtonType.YES) {
+                    // run delete in background
+                    java.util.concurrent.CompletableFuture.runAsync(() -> {
+                        try {
+                            mailService.deleteMessage(selected.id(), selMsgId);
+                            // publish domain event
+                            eventBus.publish(new ru.study.core.event.MessageDeletedEvent(selected.id(), selMsgId));
+                            // refresh inbox
+                            if (inboxController != null) inboxController.refresh();
+                            eventBus.publish(new NotificationEvent(NotificationLevel.SUCCESS, "Message deleted", null));
+                        } catch (Exception ex) {
+                            throw new RuntimeException(ex);
+                        }
+                    }).exceptionally(ex -> {
+                        Throwable c = ex instanceof java.util.concurrent.CompletionException ? ex.getCause() : ex;
+                        eventBus.publish(new NotificationEvent(NotificationLevel.ERROR, "Failed to delete message: " + c.getMessage(), c));
+                        return null;
+                    });
+                }
+            });
+        });
     }
 }

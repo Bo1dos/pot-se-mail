@@ -18,23 +18,20 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Improved message viewer:
- * - provides showHtml(String) for backward compat
- * - provides showMessage(html, attachments) which inlines cid: images (best-effort)
- * - wraps HTML into full document with meta/style
- * - enables JS (optional)
- *
- * Notes:
- * - AttachmentReference in your model doesn't have contentId; we try to match cid -> fileName or id heuristics.
- * - AttachmentService.loadAttachment(id, masterPassword) is used when attachment.id != null.
- * - For encrypted attachments you must pass master password into loadAttachment; here we pass null (adjust if needed).
+ * Improved message viewer (fixed load/duplication issues).
  */
 public class MessageViewController {
 
     @FXML public WebView webView;
 
-    private final EventBus eventBus; // optional, для нотификаций
-    private final AttachmentService attachmentService; // may be null if not injected
+    private final EventBus eventBus;
+    private final AttachmentService attachmentService;
+
+    // last successfully loaded *raw* HTML (inner / original string passed to showMessage)
+    private volatile String lastLoadedHtml = "";
+
+    // last requested raw HTML (set right before loadContent) — used by state listener
+    private volatile String lastRequestedRawHtml = null;
 
     // pattern to find src="cid:..."" (also ' and without quotes variants handled too)
     private static final Pattern CID_PATTERN = Pattern.compile("src\\s*=\\s*([\"'])cid:([^\"']+)\\1", Pattern.CASE_INSENSITIVE);
@@ -50,47 +47,124 @@ public class MessageViewController {
 
     @FXML
     public void initialize() {
+        System.out.println("MessageViewController.initialize() instance=" + System.identityHashCode(this) + " webView=" + (webView==null ? "NULL" : webView));
+
         WebEngine engine = webView.getEngine();
-        engine.setJavaScriptEnabled(true); // по желанию
-        engine.loadContent("<html><body><h2>Message Preview</h2><p>Select a message to view content.</p></body></html>", "text/html");
+        engine.setJavaScriptEnabled(true);
+
+        var lw = engine.getLoadWorker();
+        lw.stateProperty().addListener((obs, oldS, newS) -> {
+            System.out.println("[WEBENGINE] state: " + newS + " (messageView instance=" + System.identityHashCode(this) + ")");
+            // On success, remember the raw HTML we requested
+            if (newS == javafx.concurrent.Worker.State.SUCCEEDED) {
+                // commit lastLoadedHtml only after success
+                lastLoadedHtml = lastRequestedRawHtml == null ? "" : lastRequestedRawHtml;
+                System.out.println("[WEBENGINE] load SUCCEEDED — committed lastLoadedHtml (len=" + (lastLoadedHtml==null?0:lastLoadedHtml.length()) + ")");
+            }
+
+            // if a previous load finished (SUCCEEDED/CANCELLED/FAILED) and some other logic expects pending loads,
+            // that logic will schedule new loads through showMessage's pending mechanism.
+        });
+
+        lw.exceptionProperty().addListener((obs, oldEx, newEx) -> {
+            if (newEx != null) {
+                System.err.println("[WEBENGINE] exception: " + newEx.getMessage());
+                newEx.printStackTrace();
+            }
+        });
+
+        // стартовая страница
+        engine.loadContent("<html><body><h2>Message Preview</h2><p>Select a message to view content.</p></body></html>", "text/html; charset=UTF-8");
     }
 
     /** Backwards-compatible simple API used in MainWindowController */
     public void showHtml(String html) {
+        System.out.println("[DEBUG] showHtml() called on instance=" + System.identityHashCode(this)
+                + " thread=" + Thread.currentThread().getName()
+                + " htmlLen=" + (html==null?"null":html.length()));
         showMessage(html, null);
     }
 
     /**
      * Показывает сообщение: html может быть null, attachments — список вложений (если есть).
-     * Не изменяет переменные из внешней области видимости (lambda-safe).
      */
     public void showMessage(String html, List<AttachmentReference> attachments) {
-        final String htmlLocal = html;
+        final String htmlLocal = html == null ? "" : html;
         final List<AttachmentReference> attachmentsLocal = attachments;
 
-        Platform.runLater(() -> {
-            try {
-                String toShow;
-                if (htmlLocal == null || htmlLocal.isBlank()) {
-                    toShow = wrapHtml(escapeHtml("No HTML content"), null);
-                } else {
-                    String processed = htmlLocal;
-                    // inline cid: images if attachments and attachmentService available
-                    if (attachmentsLocal != null && !attachmentsLocal.isEmpty() && attachmentService != null) {
-                        processed = inlineCidImages(processed, attachmentsLocal);
-                    }
-                    // ensure full wrapper (meta charset + basic style)
-                    toShow = wrapHtml(processed, null);
-                }
-                webView.getEngine().loadContent(toShow, "text/html; charset=UTF-8");
-            } catch (Exception ex) {
-                if (eventBus != null) eventBus.publish(new NotificationEvent(NotificationLevel.ERROR, "Failed to render message: " + ex.getMessage(), ex));
-                webView.getEngine().loadContent("<html><body><p>(render error)</p></body></html>");
+        // Быстрая дедупликация — если содержимое такое же, не трогаем WebView
+        if (htmlLocal.equals(lastLoadedHtml)) {
+            System.out.println("[DEBUG] showMessage: same as lastLoadedHtml -> skipping load");
+            return;
+        }
+
+        // Если сейчас WebEngine занят загрузкой — поставим в pending и выйдем
+        var lw = webView.getEngine().getLoadWorker();
+        if (lw.getState() == javafx.concurrent.Worker.State.RUNNING) {
+            synchronized (this) {
+                // поместим в поле lastRequestedRawHtml как "pending" — но не затираем lastLoadedHtml
+                lastRequestedRawHtml = htmlLocal;
             }
-        });
+            System.out.println("[DEBUG] showMessage: load in progress, queued pendingHtml (len=" + htmlLocal.length() + ")");
+            return;
+        }
+
+        // Иначе грузим прямо сейчас (на FX-потоке)
+        Platform.runLater(() -> loadNowWithAttachments(htmlLocal, attachmentsLocal));
+    }
+
+    // ---- вспомогательные методы ----
+    private void loadNowWithAttachments(String htmlLocal, List<AttachmentReference> attachmentsLocal) {
+        try {
+            System.out.println("[DEBUG] loadNowWithAttachments on instance=" + System.identityHashCode(this) + " htmlLen=" + htmlLocal.length());
+            String processed;
+            if (htmlLocal.isBlank()) {
+                processed = wrapHtml(escapeHtml("No HTML content"), null);
+            } else {
+                processed = htmlLocal;
+                if (attachmentsLocal != null && !attachmentsLocal.isEmpty() && attachmentService != null) {
+                    try {
+                        processed = inlineCidImages(processed, attachmentsLocal);
+                    } catch (Exception e) {
+                        if (eventBus != null) eventBus.publish(new NotificationEvent(NotificationLevel.INFO, "Failed inline attachments: " + e.getMessage(), e));
+                    }
+                }
+                processed = wrapHtml(processed, null);
+            }
+
+            System.out.println("[DEBUG] showMessage -> loading content, length=" + (processed == null ? 0 : processed.length()));
+            // передаём и "raw" и "wrapped"
+            loadNow(processed, htmlLocal);
+        } catch (Exception ex) {
+            if (eventBus != null) eventBus.publish(new NotificationEvent(NotificationLevel.ERROR, "Failed to render message: " + ex.getMessage(), ex));
+            webView.getEngine().loadContent("<html><body><p>(render error)</p></body></html>", "text/html; charset=UTF-8");
+            lastLoadedHtml = "";
+        }
+    }
+
+    /** Непосредственная загрузка в WebEngine; lastLoadedHtml НЕ обновляется сразу —
+     *  оно будет обновлено в stateProperty listener при SUCCEEDED. */
+    private void loadNow(String wrappedHtmlContent, String rawHtml) {
+        if (webView == null || webView.getEngine() == null) {
+            System.out.println("[DEBUG] loadNow: webView or engine is null!");
+            return;
+        }
+
+        // установим, что мы запросили (raw) — этот текст будет закреплён как lastLoadedHtml только при SUCCEEDED
+        lastRequestedRawHtml = rawHtml == null ? "" : rawHtml;
+
+        webView.getEngine().loadContent(wrappedHtmlContent, "text/html; charset=UTF-8");
+        // НЕ присваиваем lastLoadedHtml здесь!
     }
 
     private String wrapHtml(String innerHtml, String title) {
+        if (innerHtml == null) innerHtml = "";
+        String trimmed = innerHtml.trim().toLowerCase();
+        // If it's already a full document, don't wrap again
+        if (trimmed.startsWith("<!doctype") || trimmed.startsWith("<html")) {
+            return innerHtml;
+        }
+
         StringBuilder sb = new StringBuilder();
         sb.append("<!doctype html><html><head><meta charset=\"utf-8\"/>");
         sb.append("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"/>");
@@ -105,16 +179,6 @@ public class MessageViewController {
         return sb.toString();
     }
 
-    /**
-     * Попытка инлайнить cid: ссылки в data:URL'ы.
-     * Поскольку AttachmentReference не содержит contentId, используем эвристики:
-     * - сравниваем cid с fileName,
-     * - сравниваем с id (строкой),
-     * - если attachment.filePath содержит cid
-     *
-     * Если найден attachment с id != null — пытаемся загрузить через AttachmentService.loadAttachment(id, null).
-     * Если ничего не найдено — оставляем ссылку как есть.
-     */
     private String inlineCidImages(String html, List<AttachmentReference> attachments) {
         Matcher m = CID_PATTERN.matcher(html);
         StringBuffer sb = new StringBuffer();
@@ -126,18 +190,13 @@ public class MessageViewController {
                 String normalized = cid.replaceAll("^<|>$", "");
                 AttachmentReference found = attachments.stream()
                         .filter(a -> {
-                            // try filename match (case-insensitive)
                             if (a.getFileName() != null && a.getFileName().equalsIgnoreCase(normalized)) return true;
-                            // try id match
                             if (a.getId() != null && normalized.equals(a.getId().toString())) return true;
-                            // try path contains
                             if (a.getFilePath() != null && a.getFilePath().toLowerCase().contains(normalized.toLowerCase())) return true;
-                            // else false
                             return false;
                         }).findFirst().orElse(null);
 
                 if (found != null && found.getId() != null) {
-                    // try to load bytes from service
                     try (InputStream in = attachmentService.loadAttachment(found.getId(), null)) {
                         byte[] bytes = readAllBytes(in);
                         String b64 = Base64.getEncoder().encodeToString(bytes);
@@ -145,30 +204,23 @@ public class MessageViewController {
                         if (ct == null || ct.isBlank()) ct = "application/octet-stream";
                         replacementSrc = "data:" + ct + ";base64," + b64;
                     }
-                } else {
-                    // found but no id — maybe filePath exists and readable by JVM; try to load file directly (best-effort)
-                    if (found != null && found.getFilePath() != null) {
-                        try (InputStream in = new java.io.FileInputStream(found.getFilePath())) {
-                            byte[] bytes = readAllBytes(in);
-                            String b64 = Base64.getEncoder().encodeToString(bytes);
-                            String ct = found.getContentType();
-                            if (ct == null || ct.isBlank()) ct = "application/octet-stream";
-                            replacementSrc = "data:" + ct + ";base64," + b64;
-                        } catch (Exception e) {
-                            // can't read file, fallback keep original
-                            if (eventBus != null) eventBus.publish(new NotificationEvent(NotificationLevel.INFO, "Can't read attachment file for cid " + cid + ": " + e.getMessage(), e));
-                        }
+                } else if (found != null && found.getFilePath() != null) {
+                    try (InputStream in = new java.io.FileInputStream(found.getFilePath())) {
+                        byte[] bytes = readAllBytes(in);
+                        String b64 = Base64.getEncoder().encodeToString(bytes);
+                        String ct = found.getContentType();
+                        if (ct == null || ct.isBlank()) ct = "application/octet-stream";
+                        replacementSrc = "data:" + ct + ";base64," + b64;
+                    } catch (Exception e) {
+                        if (eventBus != null) eventBus.publish(new NotificationEvent(NotificationLevel.INFO, "Can't read attachment file for cid " + cid + ": " + e.getMessage(), e));
                     }
                 }
             } catch (Exception e) {
                 if (eventBus != null) eventBus.publish(new NotificationEvent(NotificationLevel.INFO, "Failed to inline cid " + cid + ": " + e.getMessage(), e));
             }
 
-            // replace src="cid:..." with src="...replacement..."
-            // m.group(1) = quote char
             String repl = "src=" + quote + replacementSrc + quote;
-            // appendReplacement needs escaped replacement (but we give plain string)
-            m.appendReplacement(sb, repl);
+            m.appendReplacement(sb, Matcher.quoteReplacement(repl));
         }
         m.appendTail(sb);
         return sb.toString();
@@ -182,7 +234,6 @@ public class MessageViewController {
         return baos.toByteArray();
     }
 
-    // Очень простой HTML-эскейп — для fallback
     private static String escapeHtml(String s) {
         if (s == null) return "";
         return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");

@@ -521,4 +521,59 @@ public class JavaMailAdapter implements MailAdapter {
         }
     }
 
+    @Override
+    public synchronized void markMessageSeen(String folderName, long uid, boolean seen) throws MailException {
+        try {
+            if (!connected || store == null) throw new MailException("Not connected");
+            Folder folder = store.getFolder(folderName);
+            if (folder == null) throw new MailException("Folder not found: " + folderName);
+
+            // open read-write if not open
+            boolean openedHere = false;
+            if (!folder.isOpen()) {
+                folder.open(Folder.READ_WRITE);
+                openedHere = true;
+            }
+
+            try {
+                if (folder instanceof com.sun.mail.imap.IMAPFolder) {
+                    com.sun.mail.imap.IMAPFolder imap = (com.sun.mail.imap.IMAPFolder) folder;
+                    Message[] msgs = imap.getMessagesByUID(uid, uid);
+                    if (msgs != null && msgs.length > 0) {
+                        for (Message m : msgs) {
+                            m.setFlag(Flags.Flag.SEEN, seen);
+                        }
+                    }
+                } else if (folder instanceof UIDFolder) {
+                    UIDFolder ufolder = (UIDFolder) folder;
+                    Message[] msgs = ufolder.getMessagesByUID(uid, uid);
+                    if (msgs != null && msgs.length > 0) {
+                        for (Message m : msgs) {
+                            m.setFlag(Flags.Flag.SEEN, seen);
+                        }
+                    }
+                } else {
+                    // fallback: treat uid as message number
+                    try {
+                        int msgnum = (int) uid;
+                        if (msgnum > 0 && msgnum <= folder.getMessageCount()) {
+                            Message m = folder.getMessage(msgnum);
+                            if (m != null) m.setFlag(Flags.Flag.SEEN, seen);
+                        }
+                    } catch (IndexOutOfBoundsException ignore) {
+                        // nothing we can do
+                    }
+                }
+            } finally {
+                // close folder if we opened it here (keep connection otherwise)
+                if (openedHere && folder.isOpen()) {
+                    try { folder.close(true); } catch (Exception ignored) {}
+                }
+            }
+        } catch (MessagingException e) {
+            throw new MailException("Failed to mark message seen: " + e.getMessage(), e);
+        }
+    }
+
+
 }

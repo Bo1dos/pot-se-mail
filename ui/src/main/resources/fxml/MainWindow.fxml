@@ -7,9 +7,9 @@
     <ToolBar>
       <Button text="New"/>
       <Separator/>
-      <Button text="Reply"/>
+      <Button text="Reply" onAction="#onReply"/>
       <Button text="Forward"/>
-      <Button text="Delete"/>
+      <Button text="Delete" onAction="#onDelete"/>
       <Region fx:id="toolbarSpacer" HBox.hgrow="ALWAYS"/>
       <Label text="Account:"/>
       <ComboBox fx:id="accountsCombo" prefWidth="220"/>

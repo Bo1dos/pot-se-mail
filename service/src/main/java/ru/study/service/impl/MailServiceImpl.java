@@ -362,29 +362,74 @@ public class MailServiceImpl implements MailService {
                             }
                         }
 
-                        // attachments: open fresh InputStream from persistPath for saving
+                        // -----------------------------
+                        // Persist attachments using the same EntityManager/transaction (atomic)
+                        // -----------------------------
                         if (!persistPath.isEmpty()) {
-                            log.debug("Persisting {} attachments", persistPath.size());
+                            log.debug("Persisting {} attachments in same transaction", persistPath.size());
+                            // local attachments dir (mirror of AttachmentServiceImpl default)
+                            final java.nio.file.Path attachmentsDir = java.nio.file.Paths.get("./data/attachments");
+                            try {
+                                java.nio.file.Files.createDirectories(attachmentsDir);
+                            } catch (Exception ignored) {}
+
+                            final long ATTACH_DB_THRESHOLD = 5_242_880L; // 5MB threshold (keep in sync with AttachmentServiceImpl)
+
                             for (var entry : persistPath.entrySet()) {
-                                var a = entry.getKey();
+                                var aDto = entry.getKey();
                                 var path = entry.getValue();
-                                try (InputStream saveIn = java.nio.file.Files.newInputStream(path, java.nio.file.StandardOpenOption.READ)) {
-                                    // AttachmentService will decide storeInDb by its internal threshold
-                                    attachmentService.saveAttachment(saveIn, accountId, saved.getId(), a.getFileName(), true);
-                                    log.debug("Persisted attachment: {}", a.getFileName());
-                                } catch (Exception ex) {
-                                    log.warn("Failed to save outgoing attachment '{}' : {}", a.getFileName(), ex.getMessage());
-                                    // continue on attachment save error
-                                } finally {
-                                    // delete temp file if it was a temp (we created it). Heuristic: if original DTO.filePath == null -> tmp
-                                    if (a.getFilePath() == null) {
-                                        try {
-                                            java.nio.file.Files.deleteIfExists(path);
-                                            log.debug("Deleted temp file: {}", path);
-                                        } catch (Exception e) {
-                                            log.warn("Failed to delete temp file: {}", path, e);
+                                try {
+                                    long size = java.nio.file.Files.size(path);
+
+                                    AttachmentEntity ae = new AttachmentEntity();
+                                    ae.setMessage(saved);
+                                    ae.setFilename(aDto.getFileName() == null ? "unknown" : aDto.getFileName());
+                                    ae.setContentType(aDto.getContentType());
+                                    ae.setSize(size);
+
+                                    if (size <= ATTACH_DB_THRESHOLD) {
+                                        // store in DB
+                                        try (InputStream saveIn = java.nio.file.Files.newInputStream(path, java.nio.file.StandardOpenOption.READ)) {
+                                            byte[] data = saveIn.readAllBytes(); // caution: large attachments -> memory
+                                            ae.setEncryptedBlob(data);
+                                            ae.setIv(null);
+                                            ae.setFilePath(null);
+                                            attachmentRepository.save(ae); // uses same em/tx
+                                            log.debug("Persisted attachment to DB: {}", aDto.getFileName());
                                         }
+                                        // if this was a temp file we created earlier, delete it
+                                        if (aDto.getFilePath() == null) {
+                                            try { java.nio.file.Files.deleteIfExists(path); } catch (Exception e) { log.warn("Failed to delete temp file: {}", path, e); }
+                                        }
+                                    } else {
+                                        // store on FS: move file to final storage dir and save path in DB
+                                        String rawName = ae.getFilename() == null ? "unknown" : ae.getFilename();
+                                        String sanitized = rawName.replaceAll("[^a-zA-Z0-9._-]", "_");
+                                        String safeName = UUID.randomUUID() + "_" + sanitized;
+                                        java.nio.file.Path finalPath = attachmentsDir.resolve(safeName);
+                                        try {
+                                            try {
+                                                java.nio.file.Files.move(path, finalPath, java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+                                            } catch (java.nio.file.AtomicMoveNotSupportedException amnse) {
+                                                java.nio.file.Files.move(path, finalPath, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                                            }
+                                        } catch (IOException ioe) {
+                                            log.warn("Failed to move attachment file to final path, trying copy: {}", ioe.getMessage());
+                                            // fallback to copy
+                                            java.nio.file.Files.copy(path, finalPath, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                                            try { java.nio.file.Files.deleteIfExists(path); } catch (IOException ignored) {}
+                                        }
+                                        ae.setFilePath(finalPath.toString());
+                                        ae.setEncryptedBlob(null);
+                                        ae.setIv(null);
+
+                                        attachmentRepository.save(ae); // persist entity with path
+                                        log.debug("Persisted attachment file: {} -> {}", aDto.getFileName(), finalPath);
                                     }
+
+                                } catch (Exception ex) {
+                                    // keep processing other attachments, but log & notify
+                                    log.warn("Failed to save outgoing attachment '{}' : {}", aDto.getFileName(), ex.getMessage());
                                 }
                             }
                         }
@@ -454,6 +499,7 @@ public class MailServiceImpl implements MailService {
         }
     }
 
+    
     @Override
     public CompletableFuture<SendResultDTO> sendAsync(SendMessageDTO dto, Long accountId, boolean encrypt, boolean sign) {
         log.debug("Submitting async send task for accountId: {}", accountId);
@@ -748,4 +794,79 @@ public class MailServiceImpl implements MailService {
         if (list == null || list.isEmpty()) return "";
         return list.get(0);
     }
+
+    @Override
+    public void markMessageSeen(Long accountId, Long messageId) throws CoreException {
+        log.info("Mark message seen: accountId={}, messageId={}", accountId, messageId);
+
+        EntityManager em = EntityManagerFactoryProvider.createEntityManager();
+        try {
+            MessageRepository messageRepository = new MessageRepositoryImpl(em);
+            FolderRepository folderRepository = new FolderRepositoryImpl(em);
+
+            var meOpt = messageRepository.findById(messageId);
+            if (meOpt.isEmpty()) {
+                log.warn("Message not found: {}", messageId);
+                throw new NotFoundException("Message not found");
+            }
+            MessageEntity me = meOpt.get();
+            if (!Objects.equals(me.getAccountId(), accountId)) {
+                log.warn("Access denied for markAsSeen: accountId={}, messageId={}", accountId, messageId);
+                throw new CoreException("Not allowed");
+            }
+
+            // Try to mark on server if we have serverUid and folder info
+            String serverUid = me.getServerUid();
+            String folderName = null;
+            if (me.getFolder() != null) {
+                try {
+                    // FolderEntity likely has getServerName()
+                    java.lang.reflect.Method m = me.getFolder().getClass().getMethod("getServerName");
+                    Object val = m.invoke(me.getFolder());
+                    if (val != null) folderName = val.toString();
+                } catch (NoSuchMethodException | IllegalAccessException | java.lang.reflect.InvocationTargetException ignored) {
+                    // fallback: try toString or null
+                }
+            }
+
+            if (serverUid != null && !serverUid.isBlank() && folderName != null) {
+                AccountConfig cfg = accountService.getAccountConfig(accountId);
+                if (cfg != null) {
+                    try {
+                        mailAdapter.connect(cfg);
+                        try {
+                            long uid = Long.parseLong(serverUid);
+                            mailAdapter.markMessageSeen(folderName, uid, true);
+                        } catch (NumberFormatException nfe) {
+                            log.warn("Server UID is not numeric: {}", serverUid);
+                        } finally {
+                            try { mailAdapter.disconnect(); } catch (Exception ignored) {}
+                        }
+                    } catch (Exception e) {
+                        // don't fail the whole flow if server update fails — just log and continue to update DB
+                        log.warn("Failed to mark message seen on server: {}", e.getMessage());
+                        notificationService.notifyInfo("Failed to mark message seen on server: " + e.getMessage());
+                        try { mailAdapter.disconnect(); } catch (Exception ignored) {}
+                    }
+                }
+            }
+
+            // Update DB record
+            EntityTransaction tx = em.getTransaction();
+            try {
+                tx.begin();
+                me.setIsSeen(Boolean.TRUE);
+                messageRepository.save(me);
+                tx.commit();
+                log.debug("Marked message as seen in DB: {}", messageId);
+            } catch (Exception ex) {
+                if (tx.isActive()) tx.rollback();
+                log.error("Failed to mark message seen in DB: {}", messageId, ex);
+                throw new CoreException("Failed to mark message seen", ex);
+            }
+        } finally {
+            if (em != null && em.isOpen()) em.close();
+        }
+    }
+
 }

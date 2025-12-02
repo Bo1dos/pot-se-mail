@@ -7,11 +7,14 @@ import javafx.scene.control.TextField;
 import javafx.scene.web.HTMLEditor;
 import javafx.stage.FileChooser;
 import javafx.stage.Window;
+import ru.study.core.dto.AccountDTO;
+import ru.study.core.dto.MessageDetailDTO;
+import ru.study.core.dto.MessageSummaryDTO;
+import ru.study.core.event.ComposeMessageEvent;
 import ru.study.core.event.NotificationEvent;
 import ru.study.core.event.NotificationLevel;
 import ru.study.core.event.bus.EventBus;
 import ru.study.core.event.NewMessageEvent;
-import ru.study.core.dto.MessageSummaryDTO;
 import ru.study.service.api.AccountService;
 import ru.study.service.api.MailService;
 import ru.study.service.dto.OutgoingAttachmentDTO;
@@ -25,17 +28,15 @@ import java.util.concurrent.CompletionException;
 
 /**
  * ComposerController — constructor-injected services.
- * FXML: Composer.fxml
+ * Keeps UI logic simple: fill fields, attach files, send.
  */
 public class ComposerController {
 
     private final MailService mailService;
     private final EventBus eventBus;
-    // accountService может понадобиться в будущем для выбора реального аккаунта
-    @SuppressWarnings("unused")
     private final AccountService accountService;
 
-    // attachments stored in DTOs; UI does not keep InputStream open — mailService will handle filePath
+    // attachments are represented by DTOs (filePath used by service)
     private final List<OutgoingAttachmentDTO> attachments = new ArrayList<>();
 
     public ComposerController(MailService mailService, EventBus eventBus, AccountService accountService) {
@@ -47,24 +48,82 @@ public class ComposerController {
     @FXML public TextField toField;
     @FXML public TextField subjectField;
     @FXML public HTMLEditor htmlEditor;
-
-    @FXML public ComboBox<ru.study.core.dto.AccountDTO> fromCombo;
+    @FXML public ComboBox<AccountDTO> fromCombo;
 
     @FXML
     public void initialize() {
-        // existing init...
-        List<ru.study.core.dto.AccountDTO> accounts = accountService.listAccounts();
-        if (accounts != null && !accounts.isEmpty()) {
-            fromCombo.getItems().setAll(accounts);
-            fromCombo.setConverter(new javafx.util.StringConverter<>() {
-                @Override public String toString(ru.study.core.dto.AccountDTO a) { return a == null ? "" : a.email(); }
-                @Override public ru.study.core.dto.AccountDTO fromString(String s) { return null; }
+        // load accounts in background to avoid blocking UI
+        java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+            try {
+                return accountService.listAccounts();
+            } catch (Exception e) {
+                return List.<AccountDTO>of();
+            }
+        }).thenAccept(list -> {
+            Platform.runLater(() -> {
+                if (list != null && !list.isEmpty()) {
+                    fromCombo.getItems().setAll(list);
+                    fromCombo.setConverter(new javafx.util.StringConverter<>() {
+                        @Override public String toString(AccountDTO a) { return a == null ? "" : a.email(); }
+                        @Override public AccountDTO fromString(String s) { return null; }
+                    });
+                    fromCombo.getSelectionModel().selectFirst();
+                }
             });
-            fromCombo.getSelectionModel().selectFirst();
-        }
+        });
+
+        // subscribe to ComposeMessageEvent (reply/forward requests)
+        eventBus.subscribe(ComposeMessageEvent.class, ev -> {
+            Platform.runLater(() -> {
+                try {
+                    MessageDetailDTO orig = ev.getOriginalMessage();
+                    if (orig == null) {
+                        // new message
+                        toField.clear();
+                        subjectField.clear();
+                        htmlEditor.setHtmlText("");
+                    } else {
+                        // try to extract useful fields with safe access (we don't do heavy reflection here)
+                        String fromAddr = safeGetString(() -> {
+                            try { return (String) MessageDetailDTO.class.getMethod("from").invoke(orig); } catch (Exception ex) { return null; }
+                        });
+
+                        String subj = safeGetString(() -> {
+                            try { return (String) MessageDetailDTO.class.getMethod("subject").invoke(orig); } catch (Exception ex) { return null; }
+                        });
+
+                        String bodyHtml = safeGetString(() -> {
+                            // common method names we try in order
+                            try { return (String) MessageDetailDTO.class.getMethod("bodyHtml").invoke(orig); } catch (Exception ignored) {}
+                            try { return (String) MessageDetailDTO.class.getMethod("getBodyHtml").invoke(orig); } catch (Exception ignored) {}
+                            try { return (String) MessageDetailDTO.class.getMethod("body").invoke(orig); } catch (Exception ignored) {}
+                            try { return (String) MessageDetailDTO.class.getMethod("text").invoke(orig); } catch (Exception ignored) {}
+                            return null;
+                        });
+
+                        if (fromAddr != null && !fromAddr.isBlank()) toField.setText(fromAddr);
+                        if (subj == null) subj = "";
+                        if (!subj.toLowerCase().startsWith("re:")) subj = "Re: " + subj;
+                        subjectField.setText(subj);
+
+                        // If original body is HTML, use it; else use quoted plaintext.
+                        if (bodyHtml != null && !bodyHtml.isBlank()) {
+                            // simple quoted wrapper
+                            String quoted = "<div style='border-left:2px solid #ccc; padding-left:8px; color:#555;'>" +
+                                    bodyHtml + "</div><br/>";
+                            htmlEditor.setHtmlText(quoted);
+                        } else {
+                            htmlEditor.setHtmlText("<pre>(original message omitted)</pre>");
+                        }
+                    }
+                } catch (Throwable t) {
+                    eventBus.publish(new NotificationEvent(NotificationLevel.ERROR, "Failed to prepare composer: " + t.getMessage(), t));
+                }
+            });
+        });
     }
 
-    // optional: bind this to Attach button's onAction in FXML if you add it
+    /** Attach file via FileChooser */
     @FXML
     public void onAttach() {
         Window w = toField.getScene().getWindow();
@@ -82,6 +141,7 @@ public class ComposerController {
         eventBus.publish(new NotificationEvent(NotificationLevel.INFO, "Attached: " + f.getName(), null));
     }
 
+    /** Send message (async) */
     @FXML
     public void onSend() {
         String to = toField.getText();
@@ -90,18 +150,17 @@ public class ComposerController {
             return;
         }
 
-        // pick real account: use first available account (MVP). Better: let user choose in UI.
-        List<ru.study.core.dto.AccountDTO> accounts = accountService.listAccounts();
-        if (accounts == null || accounts.isEmpty()) {
-            eventBus.publish(new NotificationEvent(NotificationLevel.ERROR, "No configured account. Add an account first.", null));
+        AccountDTO acc = fromCombo.getSelectionModel().getSelectedItem();
+        if (acc == null) {
+            eventBus.publish(new NotificationEvent(NotificationLevel.ERROR, "No account selected", null));
             return;
         }
-        ru.study.core.dto.AccountDTO acc = fromCombo.getSelectionModel().getSelectedItem();
+
         Long accountId = acc.id();
         String fromAddress = acc.email();
 
-        // Build DTO (simple parsing: comma separated)
         List<String> toList = List.of(to.split("\\s*,\\s*"));
+
         SendMessageDTO dto = SendMessageDTO.builder()
                 .from(fromAddress)
                 .to(toList)
@@ -115,29 +174,37 @@ public class ComposerController {
 
         eventBus.publish(new NotificationEvent(NotificationLevel.INFO, "Sending...", null));
 
-        // call async send using the actual accountId
         mailService.sendAsync(dto, accountId, false, false)
-            .whenComplete((res, ex) -> {
-                Platform.runLater(() -> {
-                    if (ex != null) {
-                        Throwable cause = ex instanceof CompletionException ? ex.getCause() : ex;
-                        eventBus.publish(new NotificationEvent(NotificationLevel.ERROR, "Send failed: " + cause.getMessage(), cause));
-                    } else {
-                        SendResultDTO r = res;
-                        if (r.isSuccess()) {
-                            eventBus.publish(new NotificationEvent(NotificationLevel.SUCCESS, "Sent: " + r.getMessageId(), null));
-                            MessageSummaryDTO summary = new MessageSummaryDTO(-1L, dto.getFrom(), dto.getSubject(), "", java.time.Instant.now(), true, false, !dto.getAttachments().isEmpty());
-                            eventBus.publish(new NewMessageEvent(summary));
-                            subjectField.clear();
-                            htmlEditor.setHtmlText("");
-                            attachments.clear();
+                .whenComplete((res, ex) -> {
+                    Platform.runLater(() -> {
+                        if (ex != null) {
+                            Throwable cause = ex instanceof CompletionException ? ex.getCause() : ex;
+                            eventBus.publish(new NotificationEvent(NotificationLevel.ERROR, "Send failed: " + (cause == null ? ex.getMessage() : cause.getMessage()), cause));
                         } else {
-                            eventBus.publish(new NotificationEvent(NotificationLevel.ERROR, "Send failed: " + r.getError(), null));
+                            SendResultDTO r = res;
+                            if (r.isSuccess()) {
+                                eventBus.publish(new NotificationEvent(NotificationLevel.SUCCESS, "Sent: " + r.getMessageId(), null));
+                                // publish NewMessageEvent to allow mailbox to refresh / show sent msg if desired
+                                var summary = new MessageSummaryDTO(-1L, dto.getFrom(), dto.getSubject(), "", java.time.Instant.now(), true, false, !dto.getAttachments().isEmpty());
+                                eventBus.publish(new NewMessageEvent(summary));
+                                // clear UI
+                                subjectField.clear();
+                                htmlEditor.setHtmlText("");
+                                attachments.clear();
+                            } else {
+                                eventBus.publish(new NotificationEvent(NotificationLevel.ERROR, "Send failed: " + r.getError(), null));
+                            }
                         }
-                    }
+                    });
                 });
-            });
     }
 
-
+    // Helper: safe supplier wrapper
+    private static String safeGetString(java.util.concurrent.Callable<String> c) {
+        try {
+            return c.call();
+        } catch (Exception e) {
+            return null;
+        }
+    }
 }

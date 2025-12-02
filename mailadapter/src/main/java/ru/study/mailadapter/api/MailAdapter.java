@@ -44,4 +44,13 @@ public interface MailAdapter {
      * Send prepared outgoing mail (subject, body, recipients, attachments).
      */
     void send(RawOutgoingMail mail) throws MailException;
+
+    /**
+     * Mark message seen/unseen on server by UID in given folder.
+     * @param folderName server folder name (e.g. "INBOX")
+     * @param uid server UID (IMAP) or message number (fallback)
+     * @param seen true = set \Seen, false = clear
+     */
+    void markMessageSeen(String folderName, long uid, boolean seen) throws MailException;
+
 }
