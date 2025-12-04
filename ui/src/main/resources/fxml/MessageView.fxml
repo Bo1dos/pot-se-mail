@@ -1,7 +1,45 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<?import javafx.scene.web.WebView?>
+<?import javafx.scene.control.*?>
 <?import javafx.scene.layout.*?>
-<AnchorPane xmlns="http://javafx.com/javafx/17" xmlns:fx="http://javafx.com/fxml/1"
-            fx:controller="ru.study.ui.fx.controller.MessageViewController" prefHeight="600" prefWidth="480">
-  <WebView fx:id="webView" AnchorPane.topAnchor="0" AnchorPane.leftAnchor="0" AnchorPane.rightAnchor="0" AnchorPane.bottomAnchor="0"/>
-</AnchorPane>
+<BorderPane xmlns="http://javafx.com/javafx/17" xmlns:fx="http://javafx.com/fxml/1"
+            fx:controller="ru.study.ui.fx.controller.MessageViewController">
+  <top>
+    <VBox spacing="6" style="-fx-padding:6;">
+      <HBox spacing="8">
+        <Label text="Subject:"/>
+        <Label fx:id="subjectLabel" style="-fx-font-weight:bold;"/>
+      </HBox>
+      <HBox spacing="8">
+        <Label text="From:"/>
+        <Label fx:id="fromLabel"/>
+        <Label text="To:" style="-fx-padding:0 0 0 10;"/>
+        <Label fx:id="toLabel"/>
+      </HBox>
+      <HBox spacing="8">
+        <Label text="Date:"/>
+        <Label fx:id="dateLabel"/>
+      </HBox>
+    </VBox>
+  </top>
+
+  <center>
+    <SplitPane orientation="VERTICAL">
+      <AnchorPane minHeight="260">
+        <!-- placeholder: WebView будет создаваться программно -->
+        <AnchorPane fx:id="webViewContainer" AnchorPane.topAnchor="0" AnchorPane.bottomAnchor="0" AnchorPane.leftAnchor="0" AnchorPane.rightAnchor="0"/>
+        <TextArea fx:id="plainTextArea" visible="false" wrapText="true" AnchorPane.topAnchor="0" AnchorPane.bottomAnchor="0" AnchorPane.leftAnchor="0" AnchorPane.rightAnchor="0"/>
+      </AnchorPane>
+
+      <VBox spacing="6" style="-fx-padding:6;">
+        <Label text="Attachments:"/>
+        <HBox spacing="6">
+          <ListView fx:id="attachmentsList" prefHeight="120" HBox.hgrow="ALWAYS"/>
+          <VBox spacing="6">
+            <Button fx:id="openAttachmentBtn" text="Open" disable="true" maxWidth="120"/>
+            <Button fx:id="saveAttachmentBtn" text="Save..." disable="true" maxWidth="120"/>
+          </VBox>
+        </HBox>
+      </VBox>
+    </SplitPane>
+  </center>
+</BorderPane>

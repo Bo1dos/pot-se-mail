@@ -1,6 +1,7 @@
 package ru.study.app;
 
 import javafx.application.Application;
+import javafx.application.Platform;
 import javafx.fxml.FXMLLoader;
 import javafx.scene.Parent;
 import javafx.scene.Scene;
@@ -25,10 +26,15 @@ public class Main extends Application {
         // локализация (если нужна)
         //ResourceBundle rb = ResourceBundle.getBundle("i18n.messages");
 
+
+
         FXMLLoader loader = new FXMLLoader(getClass().getResource("/fxml/MainWindow.fxml"));
 
-        // Контроллеры будут браться из ServiceLocator (constructor injection)
+
         loader.setControllerFactory(clazz -> services.getBean(clazz));
+
+
+
 
         Parent root = loader.load();
         Scene scene = new Scene(root, 1100, 700);
@@ -40,6 +46,7 @@ public class Main extends Application {
 
         stage.setScene(scene);
         stage.setTitle("MailClient — MVP UI");
+        
         stage.show();
 
         // (опционально) запустить автосинхронизацию
@@ -49,7 +56,7 @@ public class Main extends Application {
         var mps = services.getBean(ru.study.service.api.MasterPasswordService.class);
         if (mps.getCurrentMasterPassword().isEmpty()) {
             // show master password modal
-            javafx.fxml.FXMLLoader masterPassLoader = new javafx.fxml.FXMLLoader(getClass().getResource("/fxml/MasterPasswordDialog.fxml"));
+            javafx.fxml.FXMLLoader masterPassLoader = new FXMLLoader(getClass().getResource("/fxml/MasterPasswordDialog.fxml"));
             masterPassLoader.setControllerFactory(clazz -> {
                 if (clazz == ru.study.ui.fx.controller.MasterPasswordDialogController.class) {
                     return new ru.study.ui.fx.controller.MasterPasswordDialogController(mps, services.getBean(ru.study.core.event.bus.EventBus.class));

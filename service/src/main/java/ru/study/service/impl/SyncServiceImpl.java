@@ -13,6 +13,7 @@ import ru.study.mailadapter.exception.MailException;
 import ru.study.mailadapter.model.AttachmentDescriptor;
 import ru.study.mailadapter.model.MailHeader;
 import ru.study.mailadapter.model.RawMail;
+import ru.study.persistence.entity.AttachmentEntity;
 import ru.study.persistence.entity.FolderEntity;
 import ru.study.persistence.entity.MessageEntity;
 import ru.study.persistence.mapper.MessageMapper;
@@ -30,6 +31,10 @@ import ru.study.service.dto.SyncResult;
 import ru.study.mailadapter.model.AccountConfig;
 
 import jakarta.persistence.EntityManager;
+
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.concurrent.*;
 
@@ -260,11 +265,16 @@ public class SyncServiceImpl implements SyncService {
                 me.setServerUid(serverUid);
                 me.setSubject(h.getSubject());
                 me.setSender(h.getFrom());
-                me.setRecipients(null);
+                me.setRecipients(null); // TODO: добавить 
                 me.setCc(null);
                 me.setSentDate(java.time.OffsetDateTime.now());
                 me.setIsEncrypted(Boolean.FALSE);
-                me.setEncryptedBodyBlob(null);
+                String bodyText = raw.getBodyPlain() == null ? raw.getBodyHtml() : raw.getBodyPlain();
+                if (bodyText != null) {
+                    me.setEncryptedBodyBlob(bodyText.getBytes(StandardCharsets.UTF_8));
+                } else {
+                    me.setEncryptedBodyBlob(null);
+                }
                 me.setSignatureBlob(null);
                 me.setIsSeen(h.isSeen());
                 me.setIsDeleted(Boolean.FALSE);
@@ -272,16 +282,78 @@ public class SyncServiceImpl implements SyncService {
                 MessageEntity saved = messageRepo.save(me); // repo expected to handle tx
 
                 if (raw.getAttachments() != null && !raw.getAttachments().isEmpty()) {
+                    final long ATTACH_DB_THRESHOLD = 5_242_880L; // 5MB, вровень с логикой отправки
                     for (AttachmentDescriptor ad : raw.getAttachments()) {
                         try {
-                            var att = new ru.study.persistence.entity.AttachmentEntity();
-                            att.setMessage(saved);
-                            att.setFilename(ad.getFileName());
-                            att.setContentType(ad.getContentType());
-                            att.setSize(ad.getSize() < 0 ? null : ad.getSize());
-                            att.setFilePath(null);
-                            att.setEncryptedBlob(null);
-                            attachmentRepo.save(att); // repo expected to handle tx
+                            // Попытка получить поток вложения из адаптера
+                            InputStream attStream = null;
+                            try {
+                                attStream = mailAdapter.openAttachmentStream(folderName, h.getUid(), ad.getId());
+                            } catch (Exception e) {
+                                log.warn("Cannot open attachment stream for uid={}, attachmentId={} : {}", h.getUid(), ad.getId(), e.getMessage());
+                                attStream = null;
+                            }
+
+                            AttachmentEntity ae = new AttachmentEntity();
+                            ae.setMessage(saved);
+                            ae.setFilename(ad.getFileName() == null ? "unknown" : ad.getFileName());
+                            ae.setContentType(ad.getContentType());
+                            ae.setSize(ad.getSize() < 0 ? null : ad.getSize());
+                            ae.setFilePath(null);
+                            ae.setEncryptedBlob(null);
+                            ae.setIv(null);
+
+                            if (attStream == null) {
+                                // не удалось получить содержимое — сохраняем только метаданные
+                                attachmentRepo.save(ae);
+                                log.warn("Saved attachment metadata only (no stream) for message UID {} attachment {}", h.getUid(), ad.getId());
+                                continue;
+                            }
+
+                            // Решаем, сохраняем ли в БД (мелкие) или на FS (большие / неизвестные)
+                            boolean storeInDb = (ad.getSize() >= 0 && ad.getSize() <= ATTACH_DB_THRESHOLD);
+
+                            if (storeInDb) {
+                                // small -> read fully into memory and persist as blob
+                                byte[] data;
+                                try {
+                                    data = attStream.readAllBytes();
+                                } finally {
+                                    try { attStream.close(); } catch (Exception ignored) {}
+                                }
+                                ae.setEncryptedBlob(data);
+                                ae.setFilePath(null);
+                                ae.setSize((long) data.length);
+                                attachmentRepo.save(ae);
+                                log.debug("Persisted small attachment to DB: {} ({} bytes) for message {}", ae.getFilename(), data.length, saved.getId());
+                            } else {
+                                // big or unknown size -> save to attachments dir and persist path
+                                final java.nio.file.Path attachmentsDir = java.nio.file.Paths.get("./data/attachments");
+                                try { java.nio.file.Files.createDirectories(attachmentsDir); } catch (Exception ignored) {}
+
+                                String rawName = ae.getFilename() == null ? "unknown" : ae.getFilename();
+                                String sanitized = rawName.replaceAll("[^a-zA-Z0-9._-]", "_");
+                                java.nio.file.Path finalPath = attachmentsDir.resolve(java.util.UUID.randomUUID() + "_" + sanitized);
+
+                                try (InputStream in = attStream; OutputStream os = java.nio.file.Files.newOutputStream(finalPath, java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.TRUNCATE_EXISTING)) {
+                                    byte[] buf = new byte[8192];
+                                    int r;
+                                    long written = 0;
+                                    while ((r = in.read(buf)) != -1) { os.write(buf, 0, r); written += r; }
+                                    os.flush();
+                                    ae.setFilePath(finalPath.toString());
+                                    ae.setEncryptedBlob(null);
+                                    ae.setSize(written);
+                                    attachmentRepo.save(ae);
+                                    log.debug("Persisted large attachment to FS: {} ({} bytes) -> {} for message {}", ae.getFilename(), written, finalPath, saved.getId());
+                                } catch (Exception ex) {
+                                    log.warn("Failed to save attachment content to FS for message {}: {}", saved.getId(), ex.getMessage(), ex);
+                                    // fallback: save metadata only
+                                    ae.setFilePath(null);
+                                    ae.setEncryptedBlob(null);
+                                    attachmentRepo.save(ae);
+                                }
+                            }
                         } catch (Exception attEx) {
                             log.warn("Failed to persist attachment for message {}: {}", serverUid, attEx.getMessage(), attEx);
                             notificationService.notifyError("Failed to persist attachment for message " + serverUid, attEx);

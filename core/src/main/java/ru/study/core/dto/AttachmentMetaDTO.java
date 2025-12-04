@@ -4,7 +4,7 @@ public record AttachmentMetaDTO(
     Long id,
     String fileName,
     String contentType,
-    long size,
+    Long size,
     boolean storedInDb, // true = blob, false = file path (hybrid)
     String filePath // may be null if storedInDb
 ) {}

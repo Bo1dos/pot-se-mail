@@ -192,16 +192,36 @@ public class JavaMailAdapter implements MailAdapter {
 
             Part part = findAttachmentPart(msg, attachmentId);
             if (part == null) throw new MailFetchException("Attachment not found: " + attachmentId, null);
-            log.debug("Opened attachment stream for UID {} attachment '{}'", uid, attachmentId);
-            return part.getInputStream(); // caller must close
+
+            // Получаем InputStream из части, копируем в временный файл и возвращаем FileInputStream на него.
+            try (InputStream src = part.getInputStream()) {
+                java.nio.file.Path tmp = java.nio.file.Files.createTempFile("mail-att-", "-" + (part.getFileName() == null ? "bin" : sanitizeFileName(part.getFileName())));
+                try (OutputStream os = java.nio.file.Files.newOutputStream(tmp, java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.TRUNCATE_EXISTING)) {
+                    byte[] buf = new byte[8192];
+                    int r;
+                    while ((r = src.read(buf)) != -1) os.write(buf, 0, r);
+                    os.flush();
+                }
+                // Открываем поток для возвращения — caller обязан его закрыть.
+                java.io.File tmpFile = tmp.toFile();
+                tmpFile.deleteOnExit();
+                return java.nio.file.Files.newInputStream(tmp, java.nio.file.StandardOpenOption.READ);
+            }
         } catch (MessagingException | IOException e) {
             log.error("Failed to open attachment stream for UID {} attachment '{}'", uid, attachmentId, e);
             throw new MailFetchException("Failed to open attachment stream", e);
         } finally {
-            // keep folder open? we close after stream usage by caller; but here we close to be safe:
+            // теперь безопасно закрыть папку — содержимое уже скопировано в temp
             try { if (f != null && f.isOpen()) f.close(false); } catch (MessagingException ignored) {}
         }
     }
+
+// вспомогательный метод: имя файла в безопасный вид
+private static String sanitizeFileName(String name) {
+    if (name == null) return "unknown";
+    return name.replaceAll("[^a-zA-Z0-9._-]", "_");
+}
+
 
     @Override
     public synchronized void send(RawOutgoingMail mail) throws MailException {

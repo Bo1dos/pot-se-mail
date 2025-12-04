@@ -33,9 +33,8 @@ public class MainWindowController {
     // Added fields for controller linking
     private InboxController inboxController;
     private FoldersController foldersController;
-    private MessageViewController messageViewController;
 
-    private final Consumer<NotificationEvent> notifHandler = this::onNotification;
+    // private final Consumer<NotificationEvent> notifHandler = this::onNotification;
     private final Consumer<NewMessageEvent> newMsgHandler = this::onNewMessage;
 
     public MainWindowController(MailService mailService,
@@ -55,7 +54,7 @@ public class MainWindowController {
         statusLabel.setText("Status: ready (MVP)");
         bottomStatus.setText("No account configured");
 
-        eventBus.subscribe(NotificationEvent.class, notifHandler);
+        // eventBus.subscribe(NotificationEvent.class, notifHandler);
         eventBus.subscribe(NewMessageEvent.class, newMsgHandler);
 
         loadAccounts();
@@ -72,173 +71,6 @@ public class MainWindowController {
             inboxController.setFolder("INBOX");
         }
 
-        // Устанавливаем callback на выбор сообщения из inbox
-        // он будет загружать MessageDetailDTO через mailService.getMessage(...) в фоне и показывать HTML в MessageViewController
-        inboxController.setOnMessageSelected(messageId -> {
-            if (messageId == null) return;
-
-            // Получаем текущий выбранный аккаунт id из combobox (MainWindow всегда владеет этим контролом)
-            AccountDTO selected = accountsCombo.getSelectionModel().getSelectedItem();
-            if (selected == null) {
-                eventBus.publish(new NotificationEvent(NotificationLevel.ERROR, "No account selected to load message", null));
-                return;
-            }
-            Long accountId = selected.id();
-
-            // safety: need messageViewController to be present
-            if (messageViewController == null) {
-                eventBus.publish(new NotificationEvent(NotificationLevel.ERROR, "Message view not available", null));
-                return;
-            }
-
-            // Загрузка в фоне
-            java.util.concurrent.CompletableFuture.supplyAsync(() -> {
-                try {
-                    // mailService.getMessage может бросать CoreException
-                    return mailService.getMessage(accountId, messageId);
-                } catch (Exception ex) {
-                    // оборачиваем исключение для thenAccept блоков
-                    throw new RuntimeException(ex);
-                }
-            }).thenAccept(detail -> {
-                // detail может быть null — покажем соответствующий текст
-                Platform.runLater(() -> {
-                    try {
-                        if (detail == null) {
-                            // TODO: убрать, дебаг
-                            System.out.println("[DEBUG] MainWindow: detail==null, calling showHtml(no content) for messageId=" + messageId);
-
-                            messageViewController.showHtml("<p>(no content)</p>");
-                            eventBus.publish(new NotificationEvent(NotificationLevel.INFO, "Message not found", null));
-                            
-                            // mark locally in inbox UI
-                            if (inboxController != null) {
-                                inboxController.markAsSeen(messageId);
-                            }
-
-                            // Try to notify server if MailService exposes markMessageSeen(accountId, messageId).
-                            // We use reflection so this code compiles even if the method is not present.
-                            try {
-                                java.lang.reflect.Method markMethod = mailService.getClass().getMethod("markMessageSeen", Long.class, Long.class);
-                                if (markMethod != null) {
-                                    java.util.concurrent.CompletableFuture.runAsync(() -> {
-                                        try {
-                                            markMethod.invoke(mailService, accountId, messageId);
-                                        } catch (Exception e) {
-                                            // log/publish but don't break UI
-                                            eventBus.publish(new NotificationEvent(NotificationLevel.INFO, "Failed to mark seen on server: " + e.getMessage(), e));
-                                        }
-                                    });
-                                }
-                            } catch (NoSuchMethodException ignored) {
-                                // method not available — ok
-                            } catch (Exception e) {
-                                eventBus.publish(new NotificationEvent(NotificationLevel.INFO, "Failed to call markMessageSeen: " + e.getMessage(), e));
-                            }
-
-                            return;
-                        }
-
-                        String html = null;
-
-                        // Список candidate-методов/полей, которые чаще всего встречаются
-                        String[] candidates = new String[] {
-                            "bodyHtml", "getBodyHtml",
-                            "html", "getHtml",
-                            "body", "getBody",
-                            "text", "getText",
-                            "bodyText", "getBodyText",
-                            "htmlBody", "getHtmlBody"
-                        };
-
-                        // Попробуем вызвать методы
-                        for (String name : candidates) {
-                            if (html != null && !html.isBlank()) break;
-                            try {
-                                // сначала пытаемся как метод без аргументов
-                                java.lang.reflect.Method m = detail.getClass().getMethod(name);
-                                if (m != null) {
-                                    Object val = m.invoke(detail);
-                                    if (val instanceof String) {
-                                        html = (String) val;
-                                        break;
-                                    }
-                                }
-                            } catch (NoSuchMethodException ignore) {
-                                // метод отсутствует — пробуем поле ниже
-                            } catch (Exception ex) {
-                                // какое-то исключение при вызове — логним и продолжаем
-                                eventBus.publish(new NotificationEvent(NotificationLevel.ERROR, "Failed to call " + name + "(): " + ex.getMessage(), ex));
-                            }
-
-                            // если метода нет — пробуем как поле (record-поля тоже видны как get-методы, но на всякий)
-                            try {
-                                java.lang.reflect.Field f = detail.getClass().getDeclaredField(name);
-                                f.setAccessible(true);
-                                Object val = f.get(detail);
-                                if (val instanceof String) {
-                                    html = (String) val;
-                                    break;
-                                }
-                            } catch (NoSuchFieldException ignore) {
-                            } catch (Exception ex) {
-                                eventBus.publish(new NotificationEvent(NotificationLevel.ERROR, "Failed to read field " + name + ": " + ex.getMessage(), ex));
-                            }
-                        }
-
-                        // Fallbacks: если html пустой — попробуем взять plain text поле, или subject/snippet из DTO
-                        if (html == null || html.isBlank()) {
-                            // попробуем искать subject или snippet поля, чтобы показать хоть что-то
-                            String fallback = null;
-                            try {
-                                // common getters: subject(), getSubject()
-                                try {
-                                    java.lang.reflect.Method msub = detail.getClass().getMethod("subject");
-                                    Object v = msub.invoke(detail);
-                                    if (v instanceof String) fallback = (String) v;
-                                } catch (NoSuchMethodException ignore) {
-                                    try {
-                                        java.lang.reflect.Method msub2 = detail.getClass().getMethod("getSubject");
-                                        Object v2 = msub2.invoke(detail);
-                                        if (v2 instanceof String) fallback = (String) v2;
-                                    } catch (NoSuchMethodException ignore2) {}
-                                }
-                            } catch (Exception ex) {
-                                // ignore
-                            }
-
-                            if (fallback == null || fallback.isBlank()) {
-                                // последний вариант — toString()
-                                fallback = detail.toString();
-                            }
-
-                            // Показываем fallback в простой обёртке
-                            String wrapped = "<html><body><pre>" + escapeHtml(fallback) + "</pre></body></html>";
-                            // TODO: убрать, дебаг
-                            System.out.println("[DEBUG] MainWindow: showing fallback content, len=" + wrapped.length());
-
-                            messageViewController.showHtml(wrapped);
-                            eventBus.publish(new NotificationEvent(NotificationLevel.INFO, "Shown fallback content (no HTML). length=" + wrapped.length(), null));
-                        } else {
-                            // TODO: убрать, дебаг
-                            System.out.println("[DEBUG] MainWindow: showing HTML content, len=" + html.length());
-                            
-                            // Если нашли HTML — покажем напрямую
-                            messageViewController.showHtml(html);
-                            eventBus.publish(new NotificationEvent(NotificationLevel.INFO, "Shown HTML content, len=" + (html == null ? 0 : html.length()), null));
-                        }
-
-                    } catch (Exception uiEx) {
-                        eventBus.publish(new NotificationEvent(NotificationLevel.ERROR, "Failed to render message: " + uiEx.getMessage(), uiEx));
-                        messageViewController.showHtml("<p>(render error)</p>");
-                    }
-                });
-            }).exceptionally(ex -> {
-                Throwable cause = ex instanceof java.util.concurrent.CompletionException ? ex.getCause() : ex;
-                eventBus.publish(new NotificationEvent(NotificationLevel.ERROR, "Failed to load message: " + cause.getMessage(), cause));
-                return null;
-            });
-        });
     }
 
     public void setFoldersController(FoldersController f) {
@@ -252,26 +84,6 @@ public class MainWindowController {
         });
     }
 
-    public void setMessageViewController(MessageViewController mvc) {
-        // TODO: убрать отладку
-        System.out.println("MainWindowController.setMessageViewController: mvc=" + System.identityHashCode(mvc));
-        this.messageViewController = mvc;
-    }
-
-    private void onNotification(NotificationEvent ev) {
-        String txt = ev.message() == null ? "" : ev.message();
-        NotificationLevel lvl = ev.level();
-        Platform.runLater(() -> {
-            switch (lvl) {
-                case INFO -> statusLabel.setText("Info: " + txt);
-                case SUCCESS -> statusLabel.setText("OK: " + txt);
-                case ERROR -> {
-                    statusLabel.setText("Error: " + txt);
-                    bottomStatus.setText(txt);
-                }
-            }
-        });
-    }
 
     private void onNewMessage(NewMessageEvent ev) {
         Platform.runLater(() -> statusLabel.setText("New: " + (ev.getMessage() == null ? "" : ev.getMessage().subject())));

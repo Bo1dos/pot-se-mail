@@ -29,6 +29,9 @@ public class InboxController {
     private final ObservableList<MessageSummaryDTO> items = FXCollections.observableArrayList();
     private Consumer<Long> onMessageSelected;
 
+    // ссылка на view-контроллер (единственный экземпляр, Injected из ServiceLocator)
+    private MessageViewController messageViewController;
+
     // page/size defaults for listMessages call
     private static final int DEFAULT_PAGE = 0;
     private static final int DEFAULT_SIZE = 200;
@@ -41,6 +44,7 @@ public class InboxController {
     }
 
     @FXML
+    @SuppressWarnings("unchecked")
     public void initialize() {
         // Если колонки из FXML уже есть — назначаем cellValueFactory для них
         if (!inboxTable.getColumns().isEmpty()) {
@@ -122,8 +126,17 @@ public class InboxController {
 
         // selection -> callback with id
         inboxTable.getSelectionModel().selectedItemProperty().addListener((obs, oldV, newV) -> {
+            Long id = newV == null ? null : newV.id();
             if (onMessageSelected != null) {
-                onMessageSelected.accept(newV == null ? null : newV.id());
+                onMessageSelected.accept(id);
+            }
+            // если view-контроллер присоединён — показываем детали
+            if (messageViewController != null) {
+                // передаём account контекст и id сообщения (null допустим — view очистит)
+                messageViewController.setAccount(currentAccountId);
+                messageViewController.setMessage(id);
+                // локально пометим как прочитанное (визуально) — не отправляем на сервер
+                if (id != null) markAsSeen(id);
             }
         });
 
@@ -131,7 +144,15 @@ public class InboxController {
         inboxTable.setOnMouseClicked(ev -> {
             if (ev.getButton() == MouseButton.PRIMARY && ev.getClickCount() == 2) {
                 MessageSummaryDTO sel = inboxTable.getSelectionModel().getSelectedItem();
-                if (sel != null && onMessageSelected != null) onMessageSelected.accept(sel.id());
+                if (sel != null) {
+                    Long id = sel.id();
+                    if (onMessageSelected != null) onMessageSelected.accept(id);
+                    if (messageViewController != null) {
+                        messageViewController.setAccount(currentAccountId);
+                        messageViewController.setMessage(id);
+                        markAsSeen(id);
+                    }
+                }
             }
         });
     }
@@ -146,13 +167,31 @@ public class InboxController {
         return sel == null ? null : sel.id();
     }
 
+    // setter для внедрения MessageViewController (единственная инстанция)
+    public void setMessageViewController(MessageViewController c) {
+        this.messageViewController = c;
+        // если уже есть выбранный аккаунт — синхронизируем контекст
+        if (c != null && currentAccountId != null) {
+            c.setAccount(currentAccountId);
+        }
+    }
+
     public void setAccount(Long accountId) {
         this.currentAccountId = accountId;
+        // при смене аккаунта — очистим текущую деталь, чтобы не показывалась чужая
+        if (messageViewController != null) {
+            messageViewController.setAccount(accountId);
+            messageViewController.setMessage(null);
+        }
         refresh();
     }
 
     public void setFolder(String folder) {
         this.currentFolder = folder == null ? "INBOX" : folder;
+        // при смене папки — очистим деталь
+        if (messageViewController != null) {
+            messageViewController.setMessage(null);
+        }
         refresh();
     }
 

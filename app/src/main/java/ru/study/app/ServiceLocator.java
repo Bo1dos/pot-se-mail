@@ -18,6 +18,8 @@ import ru.study.service.client.KeyServerClientImpl;
 import ru.study.service.impl.*;
 import ru.study.ui.event.EventBusImpl;
 import jakarta.persistence.EntityManager;
+import javafx.application.Platform;
+
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
@@ -148,28 +150,33 @@ public class ServiceLocator {
         ru.study.ui.fx.controller.FoldersController foldersCtrl =
                 new ru.study.ui.fx.controller.FoldersController(accountService, folderService, eventBus);
         
-        // Message view controller (no-arg)
+        // create MessageViewController and register it (single instance)
         ru.study.ui.fx.controller.MessageViewController messageViewCtrl =
-                new ru.study.ui.fx.controller.MessageViewController(attachmentService, eventBus);
-        
+                new ru.study.ui.fx.controller.MessageViewController(
+                        mailService,
+                        attachmentService,
+                        masterPasswordService,
+                        eventBus
+                );
+        // give inbox controller the message view instance so it can call setMessage(...)
+        inboxCtrl.setMessageViewController(messageViewCtrl);
+  
         // Main window controller
         ru.study.ui.fx.controller.MainWindowController mainCtrl =
                 new ru.study.ui.fx.controller.MainWindowController(mailService, eventBus, accountService, masterPasswordService, syncService);
-        // TODO: убрать, отладка
-        System.out.println("ServiceLocator created messageViewCtrl instance=" + System.identityHashCode(messageViewCtrl));
-
+       
+        
         
         // связываем контроллеры между собой
         mainCtrl.setInboxController(inboxCtrl);
         mainCtrl.setFoldersController(foldersCtrl);
-        mainCtrl.setMessageViewController(messageViewCtrl);
         
         // РЕГИСТРАЦИЯ бинов (чтобы FXMLLoader и прочие могли получить экземпляры)
+        registerSingleton(ru.study.ui.fx.controller.MessageViewController.class, () -> messageViewCtrl);
         registerSingleton(ru.study.ui.fx.controller.InboxController.class, () -> inboxCtrl);
         registerSingleton(ru.study.ui.fx.controller.FoldersController.class, () -> foldersCtrl);
-        registerSingleton(ru.study.ui.fx.controller.MessageViewController.class, () -> messageViewCtrl);
         registerSingleton(ru.study.ui.fx.controller.MainWindowController.class, () -> mainCtrl);
-
+        
         // Other controllers...
         registerSingleton(ru.study.ui.fx.controller.ComposerController.class,
                 () -> new ru.study.ui.fx.controller.ComposerController(mailService, eventBus, accountService));

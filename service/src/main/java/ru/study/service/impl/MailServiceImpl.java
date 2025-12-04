@@ -711,7 +711,43 @@ public class MailServiceImpl implements MailService {
                     notificationService.notifyError("Failed to decrypt message body", ex);
                 }
             } else {
-                log.debug("Message is not encrypted, returning as-is");
+                log.debug("Message is not encrypted — trying to extract plain body from entity blob");
+                
+                byte[] blob = me.getEncryptedBodyBlob();
+                
+                if (blob != null && blob.length > 0) {
+                    try {
+                        // Проверяем, есть ли HTML теги в бинарных данных
+                        String rawString = new String(blob, StandardCharsets.UTF_8);
+                        String lower = rawString.trim().toLowerCase();
+                        
+                        // простая детекция HTML
+                        if (lower.startsWith("<!doctype") || lower.contains("<html") || lower.contains("<body")) {
+                            bodyHtml = rawString;
+                            log.debug("Detected HTML content from blob, length={}", rawString.length());
+                        } else {
+                            bodyText = rawString;
+                            log.debug("Detected plain text from blob, length={}", rawString.length());
+                        }
+                    } catch (Exception ex) {
+                        log.warn("Failed to decode message body blob as UTF-8", ex);
+                        // Пробуем другие кодировки
+                        try {
+                            String rawString = new String(blob, StandardCharsets.ISO_8859_1);
+                            String lower = rawString.trim().toLowerCase();
+                            if (lower.startsWith("<!doctype") || lower.contains("<html") || lower.contains("<body")) {
+                                bodyHtml = rawString;
+                            } else {
+                                bodyText = rawString;
+                            }
+                            log.debug("Loaded body using ISO-8859-1 encoding");
+                        } catch (Exception ex2) {
+                            log.warn("Failed to decode body with any encoding");
+                        }
+                    }
+                } else {
+                    log.debug("No body blob present in entity for message {}", messageId);
+                }
             }
 
             log.debug("Returning message detail for messageId: {}", messageId);

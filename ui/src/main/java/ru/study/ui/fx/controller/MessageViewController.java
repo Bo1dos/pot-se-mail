@@ -2,236 +2,407 @@ package ru.study.ui.fx.controller;
 
 import javafx.application.Platform;
 import javafx.fxml.FXML;
+import javafx.scene.control.*;
+import javafx.scene.layout.AnchorPane;
 import javafx.scene.web.WebEngine;
 import javafx.scene.web.WebView;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import ru.study.core.dto.AttachmentMetaDTO;
+import ru.study.core.dto.MessageDetailDTO;
 import ru.study.core.event.NotificationEvent;
 import ru.study.core.event.NotificationLevel;
 import ru.study.core.event.bus.EventBus;
-import ru.study.core.model.AttachmentReference;
 import ru.study.service.api.AttachmentService;
+import ru.study.service.api.MailService;
+import ru.study.service.api.MasterPasswordService;
 
-import java.io.ByteArrayOutputStream;
+import java.awt.Desktop;
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.InputStream;
-import java.util.Base64;
+import java.nio.file.Files;
 import java.util.List;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
 
-/**
- * Improved message viewer (fixed load/duplication issues).
- */
 public class MessageViewController {
 
-    @FXML public WebView webView;
+    private static final Logger logger = LoggerFactory.getLogger(MessageViewController.class);
 
-    private final EventBus eventBus;
+    @FXML public Label subjectLabel;
+    @FXML public Label fromLabel;
+    @FXML public Label toLabel;
+    @FXML public Label dateLabel;
+
+    // Заменили WebView на контейнер
+    @FXML public AnchorPane webViewContainer;
+    @FXML public TextArea plainTextArea;
+
+    @FXML public ListView<AttachmentMetaDTO> attachmentsList;
+    @FXML public Button openAttachmentBtn;
+    @FXML public Button saveAttachmentBtn;
+
+    // Теперь WebView создаём вручную
+    private WebView webView;
+    private WebEngine webEngine;
+
+    private final MailService mailService;
     private final AttachmentService attachmentService;
+    private final MasterPasswordService masterPasswordService;
+    private final EventBus eventBus;
 
-    // last successfully loaded *raw* HTML (inner / original string passed to showMessage)
-    private volatile String lastLoadedHtml = "";
+    // текущий контекст (для вызовов getMessage)
+    private Long accountId;
+    private Long messageId;
+    private MessageDetailDTO current;
 
-    // last requested raw HTML (set right before loadContent) — used by state listener
-    private volatile String lastRequestedRawHtml = null;
-
-    // pattern to find src="cid:..."" (also ' and without quotes variants handled too)
-    private static final Pattern CID_PATTERN = Pattern.compile("src\\s*=\\s*([\"'])cid:([^\"']+)\\1", Pattern.CASE_INSENSITIVE);
-
-    public MessageViewController() {
-        this(null, null);
-    }
-
-    public MessageViewController(AttachmentService attachmentService, EventBus eventBus) {
+    public MessageViewController(MailService mailService,
+                                 AttachmentService attachmentService,
+                                 MasterPasswordService masterPasswordService,
+                                 EventBus eventBus) {
+        this.mailService = mailService;
         this.attachmentService = attachmentService;
+        this.masterPasswordService = masterPasswordService;
         this.eventBus = eventBus;
+        
+        logger.debug("MessageViewController created with mailService: {}, attachmentService: {}, masterPasswordService: {}, eventBus: {}",
+                mailService != null, attachmentService != null, masterPasswordService != null, eventBus != null);
     }
 
     @FXML
     public void initialize() {
-        System.out.println("MessageViewController.initialize() instance=" + System.identityHashCode(this) + " webView=" + (webView==null ? "NULL" : webView));
+        logger.debug("Initializing MessageViewController UI components");
+        
+        // Создаём WebView программно — это надёжно независимо от classloader'ов
+        webView = new WebView();
+        webEngine = webView.getEngine();
+        webEngine.setJavaScriptEnabled(true); // по желанию
+        logger.debug("WebView created and WebEngine initialized");
 
-        WebEngine engine = webView.getEngine();
-        engine.setJavaScriptEnabled(true);
+        // Зафиксировать резайз: растянем WebView по контейнеру
+        AnchorPane.setTopAnchor(webView, 0.0);
+        AnchorPane.setBottomAnchor(webView, 0.0);
+        AnchorPane.setLeftAnchor(webView, 0.0);
+        AnchorPane.setRightAnchor(webView, 0.0);
 
-        var lw = engine.getLoadWorker();
-        lw.stateProperty().addListener((obs, oldS, newS) -> {
-            System.out.println("[WEBENGINE] state: " + newS + " (messageView instance=" + System.identityHashCode(this) + ")");
-            // On success, remember the raw HTML we requested
-            if (newS == javafx.concurrent.Worker.State.SUCCEEDED) {
-                // commit lastLoadedHtml only after success
-                lastLoadedHtml = lastRequestedRawHtml == null ? "" : lastRequestedRawHtml;
-                System.out.println("[WEBENGINE] load SUCCEEDED — committed lastLoadedHtml (len=" + (lastLoadedHtml==null?0:lastLoadedHtml.length()) + ")");
+        webViewContainer.getChildren().add(webView);
+        logger.debug("WebView added to container with anchors set");
+
+        // остальная инициализация
+        plainTextArea.setEditable(false);
+        plainTextArea.setVisible(false);
+        webViewContainer.setVisible(false);
+
+        // attachments ListView cell factory
+        attachmentsList.setCellFactory(lv -> new ListCell<>() {
+            @Override
+            protected void updateItem(AttachmentMetaDTO it, boolean empty) {
+                super.updateItem(it, empty);
+                if (empty || it == null) {
+                    setText(null);
+                } else {
+                    String s = it.fileName() + (it.size() != null ? " (" + it.size() + " bytes)" : "");
+                    setText(s);
+                }
             }
-
-            // if a previous load finished (SUCCEEDED/CANCELLED/FAILED) and some other logic expects pending loads,
-            // that logic will schedule new loads through showMessage's pending mechanism.
         });
 
-        lw.exceptionProperty().addListener((obs, oldEx, newEx) -> {
-            if (newEx != null) {
-                System.err.println("[WEBENGINE] exception: " + newEx.getMessage());
-                newEx.printStackTrace();
+        attachmentsList.getSelectionModel().selectedItemProperty().addListener((obs, oldV, newV) -> {
+            boolean has = newV != null;
+            openAttachmentBtn.setDisable(!has);
+            saveAttachmentBtn.setDisable(!has);
+            
+            if (newV != null) {
+                logger.trace("Attachment selected: {}", newV.fileName());
             }
         });
 
-        // стартовая страница
-        engine.loadContent("<html><body><h2>Message Preview</h2><p>Select a message to view content.</p></body></html>", "text/html; charset=UTF-8");
-    }
-
-    /** Backwards-compatible simple API used in MainWindowController */
-    public void showHtml(String html) {
-        System.out.println("[DEBUG] showHtml() called on instance=" + System.identityHashCode(this)
-                + " thread=" + Thread.currentThread().getName()
-                + " htmlLen=" + (html==null?"null":html.length()));
-        showMessage(html, null);
+        openAttachmentBtn.setOnAction(e -> openSelectedAttachment());
+        saveAttachmentBtn.setOnAction(e -> saveSelectedAttachment());
+        
+        logger.info("MessageViewController initialized successfully with programmatic WebView");
     }
 
     /**
-     * Показывает сообщение: html может быть null, attachments — список вложений (если есть).
+     * Set account context for the view.
      */
-    public void showMessage(String html, List<AttachmentReference> attachments) {
-        final String htmlLocal = html == null ? "" : html;
-        final List<AttachmentReference> attachmentsLocal = attachments;
+    public void setAccount(Long accountId) {
+        logger.debug("Setting account context: {}", accountId);
+        this.accountId = accountId;
+    }
 
-        // Быстрая дедупликация — если содержимое такое же, не трогаем WebView
-        if (htmlLocal.equals(lastLoadedHtml)) {
-            System.out.println("[DEBUG] showMessage: same as lastLoadedHtml -> skipping load");
+    /**
+     * Ask view to load and show message with given id (background).
+     */
+    public void setMessage(Long messageId) {
+        // TODO: убрать, дебаг
+        System.out.println("MessageViewController.setMessage called: account=" + accountId + " messageId=" + messageId);
+        if (messageId == null) {
+            // clear UI
+            this.messageId = null;
+            current = null;
+            Platform.runLater(() -> {
+                subjectLabel.setText("");
+                fromLabel.setText("");
+                toLabel.setText("");
+                dateLabel.setText("");
+                plainTextArea.clear();
+                webEngine.loadContent("<html><body><i>(no message)</i></body></html>");
+                webViewContainer.setVisible(true);
+                attachmentsList.getItems().clear();
+            });
             return;
         }
-
-        // Если сейчас WebEngine занят загрузкой — поставим в pending и выйдем
-        var lw = webView.getEngine().getLoadWorker();
-        if (lw.getState() == javafx.concurrent.Worker.State.RUNNING) {
-            synchronized (this) {
-                // поместим в поле lastRequestedRawHtml как "pending" — но не затираем lastLoadedHtml
-                lastRequestedRawHtml = htmlLocal;
-            }
-            System.out.println("[DEBUG] showMessage: load in progress, queued pendingHtml (len=" + htmlLocal.length() + ")");
+        if (this.messageId != null && this.messageId.equals(messageId) && this.accountId != null && this.accountId.equals(accountId)) {
+            logger.debug("Same message already loaded, ignoring");
             return;
         }
-
-        // Иначе грузим прямо сейчас (на FX-потоке)
-        Platform.runLater(() -> loadNowWithAttachments(htmlLocal, attachmentsLocal));
+        this.messageId = messageId;
+        // existing load...
+        loadAndDisplay(accountId, messageId);
     }
 
-    // ---- вспомогательные методы ----
-    private void loadNowWithAttachments(String htmlLocal, List<AttachmentReference> attachmentsLocal) {
-        try {
-            System.out.println("[DEBUG] loadNowWithAttachments on instance=" + System.identityHashCode(this) + " htmlLen=" + htmlLocal.length());
-            String processed;
-            if (htmlLocal.isBlank()) {
-                processed = wrapHtml(escapeHtml("No HTML content"), null);
-            } else {
-                processed = htmlLocal;
-                if (attachmentsLocal != null && !attachmentsLocal.isEmpty() && attachmentService != null) {
-                    try {
-                        processed = inlineCidImages(processed, attachmentsLocal);
-                    } catch (Exception e) {
-                        if (eventBus != null) eventBus.publish(new NotificationEvent(NotificationLevel.INFO, "Failed inline attachments: " + e.getMessage(), e));
-                    }
-                }
-                processed = wrapHtml(processed, null);
-            }
 
-            System.out.println("[DEBUG] showMessage -> loading content, length=" + (processed == null ? 0 : processed.length()));
-            // передаём и "raw" и "wrapped"
-            loadNow(processed, htmlLocal);
-        } catch (Exception ex) {
-            if (eventBus != null) eventBus.publish(new NotificationEvent(NotificationLevel.ERROR, "Failed to render message: " + ex.getMessage(), ex));
-            webView.getEngine().loadContent("<html><body><p>(render error)</p></body></html>", "text/html; charset=UTF-8");
-            lastLoadedHtml = "";
+    /**
+     * Force reload current message.
+     */
+    public void refresh() {
+        logger.debug("Refreshing current message");
+        if (accountId != null && messageId != null) {
+            loadAndDisplay(accountId, messageId);
+        } else {
+            logger.warn("Cannot refresh - missing accountId: {} or messageId: {}", accountId, messageId);
         }
     }
 
-    /** Непосредственная загрузка в WebEngine; lastLoadedHtml НЕ обновляется сразу —
-     *  оно будет обновлено в stateProperty listener при SUCCEEDED. */
-    private void loadNow(String wrappedHtmlContent, String rawHtml) {
-        if (webView == null || webView.getEngine() == null) {
-            System.out.println("[DEBUG] loadNow: webView or engine is null!");
-            return;
-        }
+    private void loadAndDisplay(Long accountId, Long messageId) {
+        logger.info("Loading message {} for account {}", messageId, accountId);
+        
+        // clear UI quickly
+        Platform.runLater(() -> {
+            subjectLabel.setText("Loading...");
+            fromLabel.setText("");
+            toLabel.setText("");
+            dateLabel.setText("");
+            plainTextArea.clear();
+            plainTextArea.setVisible(false);
+            webEngine.loadContent("<html><body>Loading...</body></html>");
+            webViewContainer.setVisible(true);
+            attachmentsList.getItems().clear();
+            openAttachmentBtn.setDisable(true);
+            saveAttachmentBtn.setDisable(true);
+        });
 
-        // установим, что мы запросили (raw) — этот текст будет закреплён как lastLoadedHtml только при SUCCEEDED
-        lastRequestedRawHtml = rawHtml == null ? "" : rawHtml;
-
-        webView.getEngine().loadContent(wrappedHtmlContent, "text/html; charset=UTF-8");
-        // НЕ присваиваем lastLoadedHtml здесь!
-    }
-
-    private String wrapHtml(String innerHtml, String title) {
-        if (innerHtml == null) innerHtml = "";
-        String trimmed = innerHtml.trim().toLowerCase();
-        // If it's already a full document, don't wrap again
-        if (trimmed.startsWith("<!doctype") || trimmed.startsWith("<html")) {
-            return innerHtml;
-        }
-
-        StringBuilder sb = new StringBuilder();
-        sb.append("<!doctype html><html><head><meta charset=\"utf-8\"/>");
-        sb.append("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"/>");
-        sb.append("<style>");
-        sb.append("body{font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial; padding:10px; }");
-        sb.append("img{max-width:100%;height:auto;}");
-        sb.append("</style>");
-        sb.append("</head><body>");
-        if (title != null && !title.isBlank()) sb.append("<h1>").append(escapeHtml(title)).append("</h1>");
-        sb.append(innerHtml == null ? "" : innerHtml);
-        sb.append("</body></html>");
-        return sb.toString();
-    }
-
-    private String inlineCidImages(String html, List<AttachmentReference> attachments) {
-        Matcher m = CID_PATTERN.matcher(html);
-        StringBuffer sb = new StringBuffer();
-        while (m.find()) {
-            String quote = m.group(1);
-            String cid = m.group(2);
-            String replacementSrc = "cid:" + cid; // default keep original
+        CompletableFuture.supplyAsync(() -> {
             try {
-                String normalized = cid.replaceAll("^<|>$", "");
-                AttachmentReference found = attachments.stream()
-                        .filter(a -> {
-                            if (a.getFileName() != null && a.getFileName().equalsIgnoreCase(normalized)) return true;
-                            if (a.getId() != null && normalized.equals(a.getId().toString())) return true;
-                            if (a.getFilePath() != null && a.getFilePath().toLowerCase().contains(normalized.toLowerCase())) return true;
-                            return false;
-                        }).findFirst().orElse(null);
+                logger.debug("Calling mailService.getMessage for account {}, message {}", accountId, messageId);
+                MessageDetailDTO dto = mailService.getMessage(accountId, messageId);
+                // TODO: убрать, дебаг
+                // System.out.println("DTO: htmlBody()=" + dto.bodyHtml() + ", bodyText()=" + dto.bodyText() + ", isEncrypted? " + dto.encrypted() + ", attachments=" + (dto.attachments()==null?0:dto.attachments().size()));
+                logger.debug("Successfully retrieved message DTO for message {}", messageId);
+                return dto;
+            } catch (Exception e) {
+                logger.error("Failed to load message {} for account {}", messageId, accountId, e);
+                throw new RuntimeException(e);
+            }
+        }).thenAccept(dto -> {
+            logger.debug("Message DTO received, updating UI for message {}", messageId);
+            current = dto;
+            Platform.runLater(() -> displayMessage(dto));
+        }).exceptionally(ex -> {
+            Throwable c = ex instanceof java.util.concurrent.CompletionException ? ex.getCause() : ex;
+            logger.error("Exception during message loading for message {}", messageId, c);
+            eventBus.publish(new NotificationEvent(NotificationLevel.ERROR, "Failed to load message: " + c.getMessage(), c));
+            Platform.runLater(() -> {
+                subjectLabel.setText("Failed to load message");
+                webEngine.loadContent("<html><body><i>Failed to load message.</i></body></html>");
+                webViewContainer.setVisible(true);
+            });
+            return null;
+        });
+    }
 
-                if (found != null && found.getId() != null) {
-                    try (InputStream in = attachmentService.loadAttachment(found.getId(), null)) {
-                        byte[] bytes = readAllBytes(in);
-                        String b64 = Base64.getEncoder().encodeToString(bytes);
-                        String ct = found.getContentType();
-                        if (ct == null || ct.isBlank()) ct = "application/octet-stream";
-                        replacementSrc = "data:" + ct + ";base64," + b64;
-                    }
-                } else if (found != null && found.getFilePath() != null) {
-                    try (InputStream in = new java.io.FileInputStream(found.getFilePath())) {
-                        byte[] bytes = readAllBytes(in);
-                        String b64 = Base64.getEncoder().encodeToString(bytes);
-                        String ct = found.getContentType();
-                        if (ct == null || ct.isBlank()) ct = "application/octet-stream";
-                        replacementSrc = "data:" + ct + ";base64," + b64;
-                    } catch (Exception e) {
-                        if (eventBus != null) eventBus.publish(new NotificationEvent(NotificationLevel.INFO, "Can't read attachment file for cid " + cid + ": " + e.getMessage(), e));
-                    }
+    private void displayMessage(MessageDetailDTO dto) {
+        logger.debug("Displaying message in UI");
+        
+        // NOTE: DTO accessors assumed: subject(), from(), to(), sentAt(), htmlBody(), body(), attachments()
+        subjectLabel.setText(safeStr(dto.subject()));
+        fromLabel.setText(safeStr(dto.from()));
+        toLabel.setText(safeStr(dto.to()));
+        dateLabel.setText(dto.date() == null ? "" : dto.date().toString());
+
+        String html = dto.bodyHtml();   // record accessor
+        String body = dto.bodyText();   // record accessor
+
+        if (html != null && !html.isBlank()) {
+            logger.debug("Displaying HTML content for message");
+            webEngine.loadContent(html);
+            plainTextArea.setVisible(false);
+            webViewContainer.setVisible(true);
+        } else if (body != null && !body.isBlank()) {
+            logger.debug("Displaying plain text content for message");
+            // show as preformatted text in webview to preserve newlines
+            String escaped = escapeHtml(body).replace("\n", "<br/>");
+            webEngine.loadContent("<html><body><pre style='white-space:pre-wrap; font-family: sans-serif;'>" + escaped + "</pre></body></html>");
+            plainTextArea.setVisible(false);
+            webViewContainer.setVisible(true);
+        } else {
+            logger.debug("No content found for message");
+            webEngine.loadContent("<html><body><i>(empty message)</i></body></html>");
+            webViewContainer.setVisible(true);
+        }
+
+        // attachments
+        List<AttachmentMetaDTO> atts = null;
+        try {
+            Object r = dto.getClass().getMethod("attachments").invoke(dto);
+            //noinspection unchecked
+            atts = (List<AttachmentMetaDTO>) r;
+        } catch (Throwable t) {
+            logger.trace("Failed to get attachments from DTO", t);
+        }
+        
+        attachmentsList.getItems().clear();
+        if (atts != null && !atts.isEmpty()) {
+            logger.debug("Adding {} attachments to list", atts.size());
+            attachmentsList.getItems().addAll(atts);
+        } else {
+            logger.debug("No attachments found for message");
+        }
+        
+        logger.info("Message displayed successfully");
+    }
+
+    private void openSelectedAttachment() {
+        AttachmentMetaDTO sel = attachmentsList.getSelectionModel().getSelectedItem();
+        if (sel == null) {
+            logger.warn("No attachment selected to open");
+            return;
+        }
+        
+        logger.info("Opening attachment: {}", sel.fileName());
+        downloadAndOpenAttachment(sel);
+    }
+
+    private void saveSelectedAttachment() {
+        AttachmentMetaDTO sel = attachmentsList.getSelectionModel().getSelectedItem();
+        if (sel == null) {
+            logger.warn("No attachment selected to save");
+            return;
+        }
+
+        logger.info("Saving attachment: {}", sel.fileName());
+        
+        javafx.stage.FileChooser chooser = new javafx.stage.FileChooser();
+        chooser.setInitialFileName(sel.fileName());
+        File target = chooser.showSaveDialog(subjectLabel.getScene().getWindow());
+        
+        if (target == null) {
+            logger.debug("Save dialog cancelled by user");
+            return;
+        }
+
+        logger.debug("Saving attachment to: {}", target.getAbsolutePath());
+        
+        CompletableFuture.runAsync(() -> {
+            try (InputStream in = loadAttachmentStream(sel)) {
+                if (in == null) {
+                    logger.error("Attachment stream is null for attachment: {}", sel.fileName());
+                    throw new IllegalStateException("Attachment stream is null");
+                }
+                
+                try (FileOutputStream fos = new FileOutputStream(target)) {
+                    in.transferTo(fos);
+                }
+                
+                logger.info("Attachment saved successfully to: {}", target.getAbsolutePath());
+                eventBus.publish(new NotificationEvent(NotificationLevel.SUCCESS, "Saved attachment to " + target.getAbsolutePath(), null));
+            } catch (Exception e) {
+                logger.error("Failed to save attachment: {}", sel.fileName(), e);
+                eventBus.publish(new NotificationEvent(NotificationLevel.ERROR, "Failed to save attachment: " + e.getMessage(), e));
+            }
+        });
+    }
+
+    private void downloadAndOpenAttachment(AttachmentMetaDTO meta) {
+        logger.debug("Downloading and opening attachment: {}", meta.fileName());
+        
+        CompletableFuture.supplyAsync(() -> {
+            try (InputStream in = loadAttachmentStream(meta)) {
+                if (in == null) {
+                    logger.error("Attachment stream is null for attachment: {}", meta.fileName());
+                    throw new IllegalStateException("Attachment stream is null");
+                }
+                
+                // write to temp file
+                File tmp = Files.createTempFile("mailatt-", "-" + meta.fileName()).toFile();
+                logger.debug("Created temp file: {}", tmp.getAbsolutePath());
+                
+                try (FileOutputStream fos = new FileOutputStream(tmp)) {
+                    in.transferTo(fos);
+                }
+                
+                tmp.deleteOnExit();
+                return tmp;
+            } catch (Exception e) {
+                logger.error("Failed to download attachment: {}", meta.fileName(), e);
+                throw new RuntimeException(e);
+            }
+        }).thenAccept(file -> {
+            try {
+                logger.debug("Attempting to open temp file: {}", file.getAbsolutePath());
+                if (Desktop.isDesktopSupported()) {
+                    Desktop.getDesktop().open(file);
+                    logger.info("Attachment opened successfully: {}", meta.fileName());
+                    eventBus.publish(new NotificationEvent(NotificationLevel.SUCCESS, "Opened attachment " + file.getName(), null));
+                } else {
+                    logger.warn("Desktop is not supported, cannot open attachment");
+                    eventBus.publish(new NotificationEvent(NotificationLevel.WARNING, "Cannot open attachment - desktop not supported", null));
                 }
             } catch (Exception e) {
-                if (eventBus != null) eventBus.publish(new NotificationEvent(NotificationLevel.INFO, "Failed to inline cid " + cid + ": " + e.getMessage(), e));
+                logger.error("Failed to open attachment: {}", meta.fileName(), e);
+                eventBus.publish(new NotificationEvent(NotificationLevel.ERROR, "Failed to open attachment: " + e.getMessage(), e));
             }
-
-            String repl = "src=" + quote + replacementSrc + quote;
-            m.appendReplacement(sb, Matcher.quoteReplacement(repl));
-        }
-        m.appendTail(sb);
-        return sb.toString();
+        }).exceptionally(ex -> {
+            Throwable c = ex instanceof java.util.concurrent.CompletionException ? ex.getCause() : ex;
+            logger.error("Exception during attachment opening: {}", meta.fileName(), c);
+            eventBus.publish(new NotificationEvent(NotificationLevel.ERROR, "Failed to download/open attachment: " + c.getMessage(), c));
+            return null;
+        });
     }
 
-    private static byte[] readAllBytes(InputStream in) throws Exception {
-        ByteArrayOutputStream baos = new ByteArrayOutputStream();
-        byte[] buf = new byte[8192];
-        int r;
-        while ((r = in.read(buf)) != -1) baos.write(buf, 0, r);
-        return baos.toByteArray();
+    /**
+     * Loads attachment InputStream via AttachmentService (caller must close). This method takes care of master password retrieval.
+     */
+    private InputStream loadAttachmentStream(AttachmentMetaDTO meta) throws Exception {
+        logger.debug("Loading attachment stream for attachment ID: {}, filename: {}", meta.id(), meta.fileName());
+        
+        Optional<char[]> maybe = masterPasswordService.getCurrentMasterPassword();
+        char[] mp = maybe.orElse(null);
+        
+        if (mp == null) {
+            logger.warn("No master password available for loading attachment");
+        } else {
+            logger.debug("Master password retrieved successfully");
+        }
+        
+        // AttachmentService contract: loadAttachment(Long attachmentId, char[] masterPassword)
+        InputStream in = attachmentService.loadAttachment(meta.id(), mp);
+        
+        if (in == null) {
+            logger.error("AttachmentService returned null stream for attachment ID: {}", meta.id());
+        } else {
+            logger.debug("Attachment stream obtained successfully for attachment ID: {}", meta.id());
+        }
+        
+        // Do NOT clear mp here — it belongs to MasterPasswordService storage. If masterPasswordService returns a copy, it should be cleared by that service.
+        return in;
+    }
+
+    // small helpers
+    private static String safeStr(Object o) { 
+        return o == null ? "" : o.toString(); 
     }
 
     private static String escapeHtml(String s) {
