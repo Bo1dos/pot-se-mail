@@ -16,13 +16,18 @@ import ru.study.mailadapter.model.RawMail;
 import ru.study.persistence.entity.AttachmentEntity;
 import ru.study.persistence.entity.FolderEntity;
 import ru.study.persistence.entity.MessageEntity;
+import ru.study.persistence.entity.MessageWrappedKeyEntity;
 import ru.study.persistence.mapper.MessageMapper;
+import ru.study.persistence.repository.api.AccountRepository;
 import ru.study.persistence.repository.api.AttachmentRepository;
 import ru.study.persistence.repository.api.FolderRepository;
 import ru.study.persistence.repository.api.MessageRepository;
+import ru.study.persistence.repository.api.MessageWrappedKeyRepository;
+import ru.study.persistence.repository.impl.AccountRepositoryImpl;
 import ru.study.persistence.repository.impl.AttachmentRepositoryImpl;
 import ru.study.persistence.repository.impl.FolderRepositoryImpl;
 import ru.study.persistence.repository.impl.MessageRepositoryImpl;
+import ru.study.persistence.repository.impl.MessageWrappedKeyRepositoryImpl;
 import ru.study.persistence.util.EntityManagerFactoryProvider;
 import ru.study.service.api.AccountService;
 import ru.study.service.api.NotificationService;
@@ -35,11 +40,16 @@ import jakarta.persistence.EntityManager;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.Base64;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.*;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 public class SyncServiceImpl implements SyncService {
 
@@ -238,6 +248,18 @@ public class SyncServiceImpl implements SyncService {
         FolderRepository folderRepo = new FolderRepositoryImpl(em);
         MessageRepository messageRepo = new MessageRepositoryImpl(em);
         AttachmentRepository attachmentRepo = new AttachmentRepositoryImpl(em);
+        MessageWrappedKeyRepository wrappedKeyRepo = new MessageWrappedKeyRepositoryImpl(em);
+        AccountRepository accountRepo = new AccountRepositoryImpl(em); // Добавляем
+
+        // Получаем email текущего аккаунта
+        String myEmail = accountRepo.findById(accountId)
+            .map(acc -> acc.getEmail())
+            .orElse(null);
+        
+        if (myEmail == null) {
+            log.error("Cannot find email for account {}", accountId);
+            return;
+        }
 
         FolderEntity folderEntity = folderRepo.findByAccountAndServerName(accountId, folderName)
                 .orElseThrow(() -> new NotFoundException("Folder not found: " + folderName));
@@ -265,32 +287,59 @@ public class SyncServiceImpl implements SyncService {
                 me.setServerUid(serverUid);
                 me.setSubject(h.getSubject());
                 me.setSender(h.getFrom());
-                me.setRecipients(null); // TODO: добавить 
+                me.setRecipients(null);
                 me.setCc(null);
                 me.setSentDate(java.time.OffsetDateTime.now());
-                me.setIsEncrypted(Boolean.FALSE);
-                String bodyText = raw.getBodyPlain() == null ? raw.getBodyHtml() : raw.getBodyPlain();
-                if (bodyText != null) {
-                    me.setEncryptedBodyBlob(bodyText.getBytes(StandardCharsets.UTF_8));
+
+                me.setIsEncrypted(Boolean.FALSE); // default, возможно станет TRUE ниже
+                String bodyTextCandidate = raw.getBodyPlain() == null ? raw.getBodyHtml() : raw.getBodyPlain();
+                
+                if (bodyTextCandidate != null) {
+                    // Trim to avoid whitespace interfering with base64 detection
+                    String trimmed = bodyTextCandidate.trim();
+                    try {
+                        if (isEncryptedContent(trimmed)) {
+                            // decoded bytes should be exactly the EncryptedBlob-encoded bytes (alg|iv|ct as UTF-8 bytes)
+                            byte[] decoded = Base64.getDecoder().decode(trimmed);
+                            me.setEncryptedBodyBlob(decoded); // store raw encoded EncryptedBlob bytes
+                            me.setIsEncrypted(Boolean.TRUE);
+                            log.debug("Detected encrypted message body (Base64 EncryptedBlob). Stored decoded blob, message will be marked encrypted.");
+                        } else {
+                            // plain text/html body
+                            me.setEncryptedBodyBlob(bodyTextCandidate.getBytes(StandardCharsets.UTF_8));
+                            me.setIsEncrypted(Boolean.FALSE);
+                        }
+                    } catch (IllegalArgumentException iae) {
+                        // Base64 decode failed -> treat as plain text
+                        log.debug("Body content is not valid Base64: treat as plaintext for message uid={}", serverUid);
+                        me.setEncryptedBodyBlob(bodyTextCandidate.getBytes(StandardCharsets.UTF_8));
+                        me.setIsEncrypted(Boolean.FALSE);
+                    }
                 } else {
                     me.setEncryptedBodyBlob(null);
+                    me.setIsEncrypted(Boolean.FALSE);
                 }
+
                 me.setSignatureBlob(null);
                 me.setIsSeen(h.isSeen());
                 me.setIsDeleted(Boolean.FALSE);
 
                 MessageEntity saved = messageRepo.save(me); // repo expected to handle tx
 
+                // Переменная для хранения найденных ключей
+                Map<String, byte[]> foundKeys = new HashMap<>();
+                
                 if (raw.getAttachments() != null && !raw.getAttachments().isEmpty()) {
-                    final long ATTACH_DB_THRESHOLD = 5_242_880L; // 5MB, вровень с логикой отправки
+                    final long ATTACH_DB_THRESHOLD = 5_242_880L; // 5MB
+                    
                     for (AttachmentDescriptor ad : raw.getAttachments()) {
                         try {
-                            // Попытка получить поток вложения из адаптера
                             InputStream attStream = null;
                             try {
                                 attStream = mailAdapter.openAttachmentStream(folderName, h.getUid(), ad.getId());
                             } catch (Exception e) {
-                                log.warn("Cannot open attachment stream for uid={}, attachmentId={} : {}", h.getUid(), ad.getId(), e.getMessage());
+                                log.warn("Cannot open attachment stream for uid={}, attachmentId={} : {}", 
+                                        h.getUid(), ad.getId(), e.getMessage());
                                 attStream = null;
                             }
 
@@ -303,69 +352,112 @@ public class SyncServiceImpl implements SyncService {
                             ae.setEncryptedBlob(null);
                             ae.setIv(null);
 
+                            // Проверяем, не является ли это файлом с ключами
+                            boolean isKeysFile = ad.getFileName() != null && 
+                                                ad.getFileName().equals("encryption_keys.json");
+                            
                             if (attStream == null) {
-                                // не удалось получить содержимое — сохраняем только метаданные
                                 attachmentRepo.save(ae);
-                                log.warn("Saved attachment metadata only (no stream) for message UID {} attachment {}", h.getUid(), ad.getId());
+                                log.warn("Saved attachment metadata only (no stream) for message UID {} attachment {}", 
+                                        h.getUid(), ad.getId());
                                 continue;
                             }
 
-                            // Решаем, сохраняем ли в БД (мелкие) или на FS (большие / неизвестные)
-                            boolean storeInDb = (ad.getSize() >= 0 && ad.getSize() <= ATTACH_DB_THRESHOLD);
-
-                            if (storeInDb) {
-                                // small -> read fully into memory and persist as blob
-                                byte[] data;
+                            if (isKeysFile) {
+                                // Читаем JSON с ключами
                                 try {
-                                    data = attStream.readAllBytes();
-                                } finally {
-                                    try { attStream.close(); } catch (Exception ignored) {}
-                                }
-                                ae.setEncryptedBlob(data);
-                                ae.setFilePath(null);
-                                ae.setSize((long) data.length);
-                                attachmentRepo.save(ae);
-                                log.debug("Persisted small attachment to DB: {} ({} bytes) for message {}", ae.getFilename(), data.length, saved.getId());
-                            } else {
-                                // big or unknown size -> save to attachments dir and persist path
-                                final java.nio.file.Path attachmentsDir = java.nio.file.Paths.get("./data/attachments");
-                                try { java.nio.file.Files.createDirectories(attachmentsDir); } catch (Exception ignored) {}
-
-                                String rawName = ae.getFilename() == null ? "unknown" : ae.getFilename();
-                                String sanitized = rawName.replaceAll("[^a-zA-Z0-9._-]", "_");
-                                java.nio.file.Path finalPath = attachmentsDir.resolve(java.util.UUID.randomUUID() + "_" + sanitized);
-
-                                try (InputStream in = attStream; OutputStream os = java.nio.file.Files.newOutputStream(finalPath, java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.TRUNCATE_EXISTING)) {
-                                    byte[] buf = new byte[8192];
-                                    int r;
-                                    long written = 0;
-                                    while ((r = in.read(buf)) != -1) { os.write(buf, 0, r); written += r; }
-                                    os.flush();
-                                    ae.setFilePath(finalPath.toString());
-                                    ae.setEncryptedBlob(null);
-                                    ae.setSize(written);
+                                    byte[] jsonData = attStream.readAllBytes();
+                                    String jsonStr = new String(jsonData, StandardCharsets.UTF_8);
+                                    
+                                    ObjectMapper mapper = new ObjectMapper();
+                                    Map<String, String> keysMap = mapper.readValue(
+                                        jsonStr, 
+                                        new com.fasterxml.jackson.core.type.TypeReference<Map<String, String>>() {}
+                                    );
+                                    
+                                    // Декодируем все ключи из Base64
+                                    for (Map.Entry<String, String> entry : keysMap.entrySet()) {
+                                        try {
+                                            byte[] decodedKey = Base64.getDecoder().decode(entry.getValue());
+                                            foundKeys.put(entry.getKey(), decodedKey);
+                                            log.debug("Found wrapped key for recipient: {}", entry.getKey());
+                                        } catch (Exception e) {
+                                            log.warn("Failed to decode key for recipient {}: {}", 
+                                                    entry.getKey(), e.getMessage());
+                                        }
+                                    }
+                                    
+                                    // Сохраняем сам файл как обычное вложение
+                                    if (jsonData.length <= ATTACH_DB_THRESHOLD) {
+                                        ae.setEncryptedBlob(jsonData);
+                                        ae.setSize((long) jsonData.length);
+                                    } else {
+                                        final java.nio.file.Path attachmentsDir = java.nio.file.Paths.get("./data/attachments");
+                                        try { java.nio.file.Files.createDirectories(attachmentsDir); } catch (Exception ignored) {}
+                                        
+                                        String sanitized = ad.getFileName().replaceAll("[^a-zA-Z0-9._-]", "_");
+                                        java.nio.file.Path finalPath = attachmentsDir.resolve(
+                                            java.util.UUID.randomUUID() + "_" + sanitized);
+                                        
+                                        java.nio.file.Files.write(finalPath, jsonData);
+                                        ae.setFilePath(finalPath.toString());
+                                        ae.setSize((long) jsonData.length);
+                                    }
+                                    
                                     attachmentRepo.save(ae);
-                                    log.debug("Persisted large attachment to FS: {} ({} bytes) -> {} for message {}", ae.getFilename(), written, finalPath, saved.getId());
-                                } catch (Exception ex) {
-                                    log.warn("Failed to save attachment content to FS for message {}: {}", saved.getId(), ex.getMessage(), ex);
-                                    // fallback: save metadata only
-                                    ae.setFilePath(null);
-                                    ae.setEncryptedBlob(null);
-                                    attachmentRepo.save(ae);
+                                    log.info("Processed encryption_keys.json for message UID {}, found {} keys", 
+                                            h.getUid(), keysMap.size());
+                                    
+                                } catch (Exception e) {
+                                    log.error("Failed to parse encryption_keys.json for message UID {}: {}", 
+                                            h.getUid(), e.getMessage());
+                                    // Сохраняем как обычное вложение
+                                    processRegularAttachment(ae, attStream, attachmentRepo, ATTACH_DB_THRESHOLD);
                                 }
+                                continue;
                             }
+
+                            // Обычное вложение
+                            processRegularAttachment(ae, attStream, attachmentRepo, ATTACH_DB_THRESHOLD);
+                            
                         } catch (Exception attEx) {
-                            log.warn("Failed to persist attachment for message {}: {}", serverUid, attEx.getMessage(), attEx);
+                            log.warn("Failed to persist attachment for message {}: {}", 
+                                    serverUid, attEx.getMessage(), attEx);
                             notificationService.notifyError("Failed to persist attachment for message " + serverUid, attEx);
                         }
                     }
+                }
+
+                // Сохраняем найденные wrapped keys в БД
+                if (!foundKeys.isEmpty() && me.getIsEncrypted()) {
+                    for (Map.Entry<String, byte[]> entry : foundKeys.entrySet()) {
+                        try {
+                            MessageWrappedKeyEntity wk = new MessageWrappedKeyEntity();
+                            wk.setMessage(saved);
+                            wk.setRecipient(entry.getKey());
+                            wk.setWrappedBlob(entry.getValue());
+                            wrappedKeyRepo.save(wk);
+                            log.debug("Saved wrapped key for recipient: {}", entry.getKey());
+                        } catch (Exception e) {
+                            log.error("Failed to save wrapped key for recipient {}: {}", 
+                                    entry.getKey(), e.getMessage());
+                        }
+                    }
+                    log.info("Saved {} wrapped keys for message UID {}", foundKeys.size(), h.getUid());
+                }
+
+                // Обновляем флаг isEncrypted, если нашли ключи
+                if (!foundKeys.isEmpty() && !me.getIsEncrypted()) {
+                    me.setIsEncrypted(Boolean.TRUE);
+                    messageRepo.save(me);
+                    log.debug("Updated message UID {} to encrypted=true (found wrapped keys)", h.getUid());
                 }
 
                 // update folder last sync uid and persist
                 try {
                     long currentLast = folderEntity.getLastSyncUid() == null ? 0L : folderEntity.getLastSyncUid();
                     folderEntity.setLastSyncUid(Math.max(currentLast, h.getUid()));
-                    folderRepo.save(folderEntity); // repo expected to handle tx
+                    folderRepo.save(folderEntity);
                 } catch (Exception fex) {
                     log.warn("Failed to update folder lastSyncUid for {}: {}", folderName, fex.getMessage(), fex);
                     notificationService.notifyError("Failed to update folder sync state: " + folderName, fex);
@@ -376,16 +468,98 @@ public class SyncServiceImpl implements SyncService {
                 eventBus.publish(new NewMessageEvent(summary));
 
                 newCount++;
-                log.info("New message persisted account={}, folder={}, uid={}", accountId, folderName, serverUid);
+                log.info("New message persisted account={}, folder={}, uid={}, encrypted={}, keysFound={}", 
+                        accountId, folderName, serverUid, saved.getIsEncrypted(), foundKeys.size());
             } catch (Exception e) {
-                log.warn("Failed to persist incoming message uid={} for account {} folder {}: {}", h.getUid(), accountId, folderName, e.getMessage(), e);
+                log.warn("Failed to persist incoming message uid={} for account {} folder {}: {}", 
+                        h.getUid(), accountId, folderName, e.getMessage(), e);
                 notificationService.notifyError("Failed to persist incoming message uid=" + h.getUid(), e);
-                // continue with next header
             }
         }
 
         String details = "synced folder: " + folderName + ", new=" + newCount;
         notificationService.notifyInfo(details);
         log.info(details);
+    }
+
+    // Вспомогательный метод для обработки обычных вложений
+    private void processRegularAttachment(AttachmentEntity ae, InputStream attStream, 
+                                        AttachmentRepository repo, long threshold) throws Exception {
+        boolean storeInDb = (ae.getSize() == null || ae.getSize() <= threshold);
+        
+        if (storeInDb) {
+            byte[] data = attStream.readAllBytes();
+            ae.setEncryptedBlob(data);
+            ae.setFilePath(null);
+            ae.setSize((long) data.length);
+            repo.save(ae);
+            log.debug("Persisted small attachment to DB: {} ({} bytes)", ae.getFilename(), data.length);
+        } else {
+            final java.nio.file.Path attachmentsDir = java.nio.file.Paths.get("./data/attachments");
+            try { java.nio.file.Files.createDirectories(attachmentsDir); } catch (Exception ignored) {}
+
+            String rawName = ae.getFilename() == null ? "unknown" : ae.getFilename();
+            String sanitized = rawName.replaceAll("[^a-zA-Z0-9._-]", "_");
+            java.nio.file.Path finalPath = attachmentsDir.resolve(java.util.UUID.randomUUID() + "_" + sanitized);
+
+            try (OutputStream os = java.nio.file.Files.newOutputStream(finalPath)) {
+                byte[] buf = new byte[8192];
+                int r;
+                long written = 0;
+                while ((r = attStream.read(buf)) != -1) { 
+                    os.write(buf, 0, r); 
+                    written += r; 
+                }
+                ae.setFilePath(finalPath.toString());
+                ae.setSize(written);
+                repo.save(ae);
+                log.debug("Persisted large attachment to FS: {} ({} bytes) -> {}", 
+                        ae.getFilename(), written, finalPath);
+            }
+        }
+    }
+    
+
+    public static boolean isEncryptedContent(String content) {
+        if (content == null || content.trim().isEmpty()) {
+            return false;
+        }
+        
+        String trimmed = content.trim();
+        
+        // 1. Проверяем, что это валидный Base64
+        if (!isValidBase64(trimmed)) {
+            return false;
+        }
+        
+        try {
+            byte[] decoded = Base64.getDecoder().decode(trimmed);
+            String decodedStr = new String(decoded, StandardCharsets.UTF_8);
+            
+            // 2. Проверяем формат EncryptedBlobCodec
+            // Формат: "Algorithm|base64(IV)|base64(CipherText)"
+            String[] parts = decodedStr.split("\\|", 3);
+            if (parts.length != 3) {
+                return false;
+            }
+            
+            // 3. Проверяем, что алгоритм поддерживается
+            String algorithm = parts[0];
+            return algorithm.startsWith("DES/") || 
+                algorithm.startsWith("AES/") || 
+                algorithm.startsWith("RSA/");
+            
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private static boolean isValidBase64(String str) {
+        try {
+            Base64.getDecoder().decode(str);
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
     }
 }

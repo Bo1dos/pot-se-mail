@@ -11,6 +11,7 @@ import ru.study.persistence.repository.api.AccountRepository;
 import ru.study.crypto.api.KeyManagement;
 import ru.study.crypto.model.EncryptedBlob;
 import ru.study.service.api.AccountService;
+import ru.study.service.api.KeyManagementService;
 import ru.study.service.api.MasterPasswordService;
 import ru.study.service.dto.CreateAccountRequest;
 import ru.study.service.dto.UpdateAccountRequest;
@@ -40,20 +41,26 @@ public class AccountServiceImpl implements AccountService {
     private final MailAdapter mailAdapter;
     private final SecureRandom rnd = new SecureRandom();
 
+    private final KeyManagementService keyManagementService;
+
     public AccountServiceImpl(AccountRepository accountRepository,
-                              KeyManagement cryptoKeyManagement,
-                              MasterPasswordService masterPasswordService,
-                              MailAdapter mailAdapter) {
+                            KeyManagement cryptoKeyManagement,
+                            MasterPasswordService masterPasswordService,
+                            MailAdapter mailAdapter,
+                            KeyManagementService keyManagementService) {
         this.accountRepository = accountRepository;
         this.cryptoKeyManagement = cryptoKeyManagement;
         this.masterPasswordService = masterPasswordService;
         this.mailAdapter = mailAdapter;
-        log.debug("AccountServiceImpl initialized with repository: {}, crypto: {}, masterPasswordService: {}, mailAdapter: {}", 
-                 accountRepository.getClass().getSimpleName(), 
-                 cryptoKeyManagement.getClass().getSimpleName(),
-                 masterPasswordService.getClass().getSimpleName(),
-                 mailAdapter.getClass().getSimpleName());
+        this.keyManagementService = keyManagementService;
+        log.debug("AccountServiceImpl initialized with repository: {}, crypto: {}, masterPasswordService: {}, mailAdapter: {}, keyMgmtService: {}",
+                accountRepository.getClass().getSimpleName(),
+                cryptoKeyManagement.getClass().getSimpleName(),
+                masterPasswordService.getClass().getSimpleName(),
+                mailAdapter.getClass().getSimpleName(),
+                keyManagementService == null ? "null" : keyManagementService.getClass().getSimpleName());
     }
+
 
     @Override
     public AccountDTO createAccount(CreateAccountRequest req) throws CoreException {
@@ -117,6 +124,21 @@ public class AccountServiceImpl implements AccountService {
             log.debug("Saving account entity to repository");
             AccountEntity saved = accountRepository.save(ent);
             log.debug("Saved entity id from DB: {}", saved.getId());
+
+            // try to generate key pair for this account (optional non-fatal)
+            try {
+                if (keyManagementService != null) {
+                    log.debug("Attempting to generate RSA keypair for new account id={}", saved.getId());
+                    keyManagementService.generateKeyPair(saved.getId(), master);
+                    log.info("Keypair generation triggered for account id={}", saved.getId());
+                } else {
+                    log.warn("KeyManagementService not configured — skipping key generation for account id={}", saved.getId());
+                }
+            } catch (Exception e) {
+                // don't fail account creation if key gen/publish fails – just log & notify
+                log.warn("Failed to generate/publish keypair for account id={}: {}", saved.getId(), e.getMessage(), e);
+            }
+
             Account domain = AccountMapper.toDomain(saved);
             log.debug("Domain account id: {}", domain.getId());
             AccountDTO result = AccountMapper.toDto(domain);

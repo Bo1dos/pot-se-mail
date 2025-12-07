@@ -2,6 +2,7 @@ package ru.study.ui.fx.controller;
 
 import javafx.application.Platform;
 import javafx.fxml.FXML;
+import javafx.scene.control.CheckBox;
 import javafx.scene.control.ComboBox;
 import javafx.scene.control.TextField;
 import javafx.scene.web.HTMLEditor;
@@ -49,6 +50,10 @@ public class ComposerController {
     @FXML public TextField subjectField;
     @FXML public HTMLEditor htmlEditor;
     @FXML public ComboBox<AccountDTO> fromCombo;
+
+
+    @FXML public CheckBox encryptCheckbox;
+    @FXML public CheckBox signCheckbox;
 
     @FXML
     public void initialize() {
@@ -174,7 +179,12 @@ public class ComposerController {
 
         eventBus.publish(new NotificationEvent(NotificationLevel.INFO, "Sending...", null));
 
-        mailService.sendAsync(dto, accountId, false, false)
+        boolean encrypt = encryptCheckbox != null && encryptCheckbox.isSelected();
+        boolean sign = signCheckbox != null && signCheckbox.isSelected();
+
+        System.out.println("Encrypt and sign:" + encrypt + " " + sign);
+
+        mailService.sendAsync(dto, accountId, encrypt, sign)
                 .whenComplete((res, ex) -> {
                     Platform.runLater(() -> {
                         if (ex != null) {

@@ -58,7 +58,7 @@ public class KeyRepositoryImpl implements KeyRepository {
     @Override
     public List<KeyEntity> findByAccountId(Long accountId) {
         TypedQuery<KeyEntity> q = em.createQuery(
-            "SELECT k FROM KeyEntity k WHERE k.accountId = :aid", KeyEntity.class);
+            "SELECT k FROM KeyEntity k WHERE k.account.id = :aid", KeyEntity.class);
         q.setParameter("aid", accountId);
         return q.getResultList();
     }
@@ -66,7 +66,7 @@ public class KeyRepositoryImpl implements KeyRepository {
     @Override
     public Optional<KeyEntity> findPrimaryByAccountId(Long accountId) {
         TypedQuery<KeyEntity> q = em.createQuery(
-            "SELECT k FROM KeyEntity k WHERE k.accountId = :aid ORDER BY k.id", KeyEntity.class);
+            "SELECT k FROM KeyEntity k WHERE k.account.id = :aid ORDER BY k.id", KeyEntity.class);
         q.setParameter("aid", accountId);
         q.setMaxResults(1);
         return q.getResultStream().findFirst();
@@ -93,7 +93,7 @@ public class KeyRepositoryImpl implements KeyRepository {
         EntityTransaction tx = em.getTransaction();
         try {
             if (!tx.isActive()) tx.begin();
-            em.createQuery("DELETE FROM KeyEntity k WHERE k.accountId = :aid")
+            em.createQuery("DELETE FROM KeyEntity k WHERE k.account.id = :aid")
               .setParameter("aid", accountId)
               .executeUpdate();
             tx.commit();

@@ -85,15 +85,11 @@ public class ServiceLocator {
                 keyRepository, masterPasswordRepository, keyManagement, notificationService, eventBus
         );
 
-        this.accountService = new AccountServiceImpl(
-                accountRepository, keyManagement, masterPasswordService, mailAdapter
-        );
+        
 
         this.folderService = new FolderServiceImpl(accountRepository, messageRepository);
 
-        this.keyManagementService = new KeyManagementServiceImpl(
-                keyRepository, accountRepository, cryptoProviderFactory.getAsymmetricCipher("RSA"), keyManagement, eventBus
-        );
+        
 
         // KeyServerClient impl — try default impl if present, otherwise provide a dumb stub
         KeyServerClient tmpKeyServerClient;
@@ -108,6 +104,14 @@ public class ServiceLocator {
             };
         }
         this.keyServerClient = tmpKeyServerClient;
+
+        this.keyManagementService = new KeyManagementServiceImpl(
+                keyRepository, accountRepository, cryptoProviderFactory.getAsymmetricCipher("RSA"), keyManagement, eventBus, keyServerClient
+        );
+
+        this.accountService = new AccountServiceImpl(
+                accountRepository, keyManagement, masterPasswordService, mailAdapter, keyManagementService
+        );
 
         this.mailService = new MailServiceImpl(
                 accountService, mailAdapter, attachmentService, keyServerClient,

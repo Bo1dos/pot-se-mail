@@ -1,5 +1,7 @@
 package ru.study.service.impl;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import ru.study.core.dto.KeyDTO;
 import ru.study.core.exception.CoreException;
 import ru.study.persistence.entity.AccountEntity;
@@ -26,11 +28,14 @@ import java.util.Optional;
 
 public class KeyManagementServiceImpl implements KeyManagementService {
 
+    private static final Logger log = LoggerFactory.getLogger(KeyManagementServiceImpl.class);
+    
     private final KeyRepository keyRepository;
     private final AccountRepository accountRepository;
     private final AsymmetricCipher rsa;
     private final KeyManagement keyMgmt;
     private final EventBus eventBus;
+    private final ru.study.service.client.KeyServerClient keyServerClient; // <- optional, can be null
 
     private static final int DEFAULT_RSA_BITS = 2048;
     private static final int KDF_ITERATIONS = 100_000;
@@ -41,13 +46,15 @@ public class KeyManagementServiceImpl implements KeyManagementService {
         AccountRepository accountRepository,
         AsymmetricCipher rsa,
         KeyManagement keyMgmt,
-        EventBus eventBus
+        EventBus eventBus,
+        ru.study.service.client.KeyServerClient keyServerClient // new
     ) {
         this.keyRepository = keyRepository;
         this.accountRepository = accountRepository;
         this.rsa = rsa;
         this.keyMgmt = keyMgmt;
         this.eventBus = eventBus;
+        this.keyServerClient = keyServerClient;
     }
 
     @Override
@@ -81,8 +88,21 @@ public class KeyManagementServiceImpl implements KeyManagementService {
             entity.setCreatedAt(OffsetDateTime.now());
             KeyEntity saved = keyRepository.save(entity);
 
+            // try to publish public key to key server (don't fail generation on upload error)
+            if (keyServerClient != null) {
+                try {
+                    String accountEmail = acc.getEmail();
+                    if (accountEmail != null && !accountEmail.isBlank()) {
+                        keyServerClient.uploadPublicKey(accountEmail, pubPem);
+                        log.info("Published public key for {} to key server", accountEmail);
+                    }
+                } catch (Exception e) {
+                    // don't fail generateKeyPair — just warn
+                    log.warn("Failed to publish public key to key server: {}", e.getMessage(), e);
+                }
+            }
+
             KeyDTO dto = toDto(saved);
-            // publish event if needed
             eventBus.publish(new KeyCreatedEvent(saved.getId(), accountId, saved.getCreatedAt().toInstant()));
             return dto;
         } catch (CoreException e) {

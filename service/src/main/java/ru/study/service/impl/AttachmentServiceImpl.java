@@ -48,6 +48,9 @@ public class AttachmentServiceImpl implements AttachmentService {
         }
     }
 
+    
+    // NOTE: expects incoming bytes to be already encrypted if message was encrypted.
+    // The service simply persists provided bytes.
     @Override
     public AttachmentReference saveAttachment(InputStream in, Long accountId, Long messageId, String filename, boolean storeInDb) throws CoreException {
         if (in == null) throw new CoreException("Input stream is null");

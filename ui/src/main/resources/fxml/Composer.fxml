@@ -17,6 +17,16 @@
   <HBox spacing="6">
     <Button text="Attach" onAction="#onAttach"/>
     <Region HBox.hgrow="ALWAYS"/>
+    <CheckBox fx:id="encryptCheckbox" text="Encrypt">
+      <tooltip>
+        <Tooltip text="Encrypt Message Body (DES+RSA)"/>
+      </tooltip>
+    </CheckBox>
+    <CheckBox fx:id="signCheckbox" text="Sign">
+      <tooltip>
+        <Tooltip text="Sign Message (RSA)"/>
+      </tooltip>
+    </CheckBox>
     <Button text="Send" onAction="#onSend"/>
   </HBox>
 </VBox>
